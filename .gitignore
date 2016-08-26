@@ -1,0 +1,7 @@
+*.suo
+*.user
+project.lock.json
+.vs
+bin/
+obj/
+release/
