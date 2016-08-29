@@ -120,53 +120,71 @@ namespace Channels.WebSockets
                     return false; // that's all, folks
                 }
 
-                int payloadLength;
-                var frame = WebSocketProtocol.TryReadFrame(ref buffer, out payloadLength);
-                if(frame != null)
+                WebSocketsFrame frame;
+                
+                if(WebSocketProtocol.TryReadFrame(ref buffer, out frame))
                 {
+                    int payloadLength = frame.PayloadLength;
                     // buffer now points to the payload 
-                    server.OnFrameReceived(frame, ref buffer);
+                    if(!frame.IsMasked)
+                    {
+                        throw new InvalidOperationException("Client-to-server frames should be masked");
+                    }
+                    if(frame.IsControlFrame && !frame.IsFinal)
+                    {
+                        throw new InvalidOperationException("Control frames cannot be fragmented");
+                    }
+                    server.OnFrameReceived(this, ref frame, ref buffer);
                     // and finally, progress past the frame
                     if (payloadLength != 0) buffer = buffer.Slice(payloadLength);
                 }
-                
                 input.EndRead(buffer);
                 return true; // keep reading
             }
         }
 
-        protected void OnFrameReceived(WebSocketsFrame frame, ref ReadableBuffer buffer)
+        protected void OnFrameReceived(WebSocketConnection connection, ref WebSocketsFrame frame, ref ReadableBuffer buffer)
         {
             WriteStatus(frame.ToString());
             switch(frame.OpCode)
             {
                 case WebSocketsFrame.OpCodes.Binary:
-                    OnBinary(frame, ref buffer);
+                    OnBinary(connection, ref frame, ref buffer);
                     break;
                 case WebSocketsFrame.OpCodes.Close:
-                    OnClose(frame);
+                    OnClose(connection, ref frame);
                     break;
                 case WebSocketsFrame.OpCodes.Continuation:
-                    OnContinuation(frame, ref buffer);
+                    OnContinuation(connection, ref frame, ref buffer);
                     break;
                 case WebSocketsFrame.OpCodes.Ping:
-                    OnPing(frame);
+                    OnPing(connection, ref frame);
                     break;
                 case WebSocketsFrame.OpCodes.Pong:
-                    OnPong(frame);
+                    OnPong(connection, ref frame);
                     break;
                 case WebSocketsFrame.OpCodes.Text:
-                    OnText(frame, ref buffer);
+                    OnText(connection, ref frame, ref buffer);
                     break;
             }
         }
 
-        protected virtual void OnPong(WebSocketsFrame frame) { }
-        protected virtual void OnPing(WebSocketsFrame frame) { }
-        protected virtual void OnClose(WebSocketsFrame frame) { }
-        protected virtual void OnBinary(WebSocketsFrame frame, ref ReadableBuffer buffer) { }
-        protected virtual void OnText(WebSocketsFrame frame, ref ReadableBuffer buffer) { }
-        protected virtual void OnContinuation(WebSocketsFrame frame, ref ReadableBuffer buffer) { }
+        protected virtual void OnPong(WebSocketConnection connection, ref WebSocketsFrame frame) { }
+        protected virtual void OnPing(WebSocketConnection connection, ref WebSocketsFrame frame) { }
+        protected virtual void OnClose(WebSocketConnection connection, ref WebSocketsFrame frame) { }
+        protected virtual void OnContinuation(WebSocketConnection connection, ref WebSocketsFrame frame, ref ReadableBuffer buffer) { }
+        protected virtual void OnBinary(WebSocketConnection connection, ref WebSocketsFrame frame, ref ReadableBuffer buffer) { }
+        protected virtual void OnText(WebSocketConnection connection, ref WebSocketsFrame frame, ref ReadableBuffer buffer)
+        {
+            var handler = Text;
+            if(handler != null)
+            {
+                frame.ApplyMask(ref buffer);
+                handler(connection, buffer.GetUtf8String());
+            }
+        }
+        public event Action<WebSocketConnection, string> Text;
+        
 
         static readonly char[] Comma = { ',' };
         protected static class TaskResult
@@ -275,15 +293,18 @@ namespace Channels.WebSockets
             socket.WebSocketProtocol = protocol;
             return socket;
         }
-        public class WebSocketsFrame
+        public struct WebSocketsFrame
         {
             public override string ToString()
             {
-                return OpCode + ": " + PayloadLength + " bytes (" + flags + ")";
+                return OpCode.ToString() + ": " + PayloadLength.ToString()
+                    + " bytes (" + Flags.ToString() + ", mask=" + Mask.ToString()
+                    + ")";
             }
-            private Flags flags = Flags.IsFinal;
+            private readonly byte header;
+            private readonly byte header2;
             [Flags]
-            private enum Flags : byte
+            public enum FrameFlags : byte
             {
                 IsFinal = 128,
                 Reserved1 = 64,
@@ -291,7 +312,7 @@ namespace Channels.WebSockets
                 Reserved3 = 16,
                 None = 0
             }
-            public enum OpCodes
+            public enum OpCodes : byte
             {
                 Continuation = 0,
                 Text = 1,
@@ -302,27 +323,65 @@ namespace Channels.WebSockets
                 Pong = 10,
                 // 11-15 reserved for control op-codes
             }
-            public WebSocketsFrame()
-            { }
-            private bool HasFlag(Flags flag)
+            public WebSocketsFrame(byte header, bool isMasked, int mask, int payloadLength)
             {
-                return (flags & flag) != 0;
+                this.header = header;
+                header2 = (byte)(isMasked ? 1 : 0);
+                PayloadLength = payloadLength;                
+                Mask = mask;
             }
-            private void SetFlag(Flags flag, bool value)
+            public bool IsMasked => (header2 & 1) != 0;
+            private bool HasFlag(FrameFlags flag)
             {
-                if (value) flags |= flag;
-                else flags &= ~flag;
+                return (header & (byte)flag) != 0;
             }
 
-            public bool IsControlFrame { get { return (OpCode & OpCodes.Close) != 0; } }
-            public int? Mask { get; set; }
-            public OpCodes OpCode { get; set; }
-            public bool IsFinal { get { return HasFlag(Flags.IsFinal); } set { SetFlag(Flags.IsFinal, value); } }
-            public bool Reserved1 { get { return HasFlag(Flags.Reserved1); } set { SetFlag(Flags.Reserved1, value); } }
-            public bool Reserved2 { get { return HasFlag(Flags.Reserved2); } set { SetFlag(Flags.Reserved2, value); } }
-            public bool Reserved3 { get { return HasFlag(Flags.Reserved3); } set { SetFlag(Flags.Reserved3, value); } }
+            internal unsafe void ApplyMask(ref ReadableBuffer buffer)
+            {
+                if (!IsMasked) return;
+                ulong mask = (uint)Mask;
+                if (mask == 0) return;
+                mask = (mask << 32) | mask;
 
-            public int PayloadLength { get; set; }
+                foreach(var span in buffer)
+                {
+                    int len = span.Length;
+
+                    if (len >= 8)
+                    {
+                        var ptr = (ulong*)span.BufferPtr;
+                        do
+                        {
+                            (*ptr++) ^= mask;
+                            len -= 8;
+                        } while (len >= 8);
+                    }
+                    if (len != 0)
+                    {
+                        var ptr = ((byte*)span.BufferPtr) + (buffer.Length & ~7); // forwards everything except the last chunk
+                        do
+                        {
+                            var b = (byte)(mask & 255);
+                            (*ptr++) ^= b;
+                            // rotate the mask (need to preserve LHS in case we have another span)
+                            mask = (mask >> 8) | (((ulong)b) << 56);
+                            len--;
+                        } while (len != 0);
+                    }
+                }
+            }
+
+            
+            public bool IsControlFrame { get { return (header & (byte)OpCodes.Close) != 0; } }
+            public int Mask { get; }
+            public OpCodes OpCode => (OpCodes)(header & 15);
+            public FrameFlags Flags => (FrameFlags)(header & ~15);
+            public bool IsFinal { get { return HasFlag(FrameFlags.IsFinal); } }
+            public bool Reserved1 { get { return HasFlag(FrameFlags.Reserved1); } }
+            public bool Reserved2 { get { return HasFlag(FrameFlags.Reserved2); } }
+            public bool Reserved3 { get { return HasFlag(FrameFlags.Reserved3); } }
+
+            public int PayloadLength { get; }
 
         }
         internal abstract class WebSocketProtocol
@@ -423,16 +482,19 @@ namespace Channels.WebSockets
                         return Convert.ToBase64String(hash);
                     }
                 }
-                protected internal static unsafe int ReadInt32(byte* buffer, int offset)
+                protected internal static unsafe int ReadBigEndianInt32(byte* buffer, int offset)
                 {
-                    // endian-safe
                     return (buffer[offset] << 24) | (buffer[offset + 1] << 16) | (buffer[offset + 2] << 8) | buffer[offset + 3];
                 }
-                internal unsafe override WebSocketsFrame TryReadFrame(ref ReadableBuffer buffer, out int payloadLength)
+                protected internal static unsafe int ReadLittleEndianInt32(byte* buffer, int offset)
                 {
-                    payloadLength = 0;
-                    int bytesAvailable = buffer.Length;
-                    if (bytesAvailable < 2) return null; // can't read that; frame takes at minimum two bytes
+                    return (buffer[offset]) | (buffer[offset + 1] << 8) | (buffer[offset + 2] << 16) | (buffer[offset + 3] << 24);
+                }
+                internal unsafe override bool TryReadFrame(ref ReadableBuffer buffer, out WebSocketsFrame frame)
+                {
+                    frame = default(WebSocketsFrame);
+                    int payloadLength, bytesAvailable = buffer.Length;
+                    if (bytesAvailable < 2) return false; // can't read that; frame takes at minimum two bytes
 
                     // header is at most 14 bytes; can afford the stack for that
                     byte* header = stackalloc byte[14];
@@ -445,39 +507,33 @@ namespace Channels.WebSockets
                     {
                         case 126:
                             headerLength = masked ? 8 : 4;
-                            if (bytesAvailable < headerLength) return null;
+                            if (bytesAvailable < headerLength) return false;
                             payloadLength = (header[2] << 8) | header[3];
                             maskOffset = 4;
                             break;
                         case 127:
                             headerLength = masked ? 14 : 10;
-                            if (bytesAvailable < headerLength) return null;
-                            int big = ReadInt32(header, 2), little = ReadInt32(header, 6);
+                            if (bytesAvailable < headerLength) return false;
+                            int big = ReadBigEndianInt32(header, 2), little = ReadBigEndianInt32(header, 6);
                             if (big != 0 || little < 0) throw new ArgumentOutOfRangeException(); // seriously, we're not going > 2GB
                             payloadLength = little;
                             maskOffset = 10;
                             break;
                         default:
                             headerLength = masked ? 6 : 2;
-                            if (bytesAvailable < headerLength) return null;
+                            if (bytesAvailable < headerLength) return false;
                             payloadLength = tmp;
                             maskOffset = 2;
                             break;
                     }
-                    if (bytesAvailable < headerLength + payloadLength) return null; // body isn't intact
+                    if (bytesAvailable < headerLength + payloadLength) return false; // body isn't intact
 
 
-                    var frame = new WebSocketsFrame();
-
-                    frame.IsFinal = (header[0] & 128) != 0;
-                    frame.Reserved1 = (header[0] & 64) != 0;
-                    frame.Reserved2 = (header[0] & 32) != 0;
-                    frame.Reserved3 = (header[0] & 16) != 0;
-                    frame.OpCode = (WebSocketsFrame.OpCodes)(header[0] & 15);
-                    frame.Mask = masked ? (int?)ReadInt32(header, maskOffset) : null;
-                    frame.PayloadLength = payloadLength;
+                    frame = new WebSocketsFrame(header[0], masked,
+                        masked ? ReadLittleEndianInt32(header, maskOffset) : 0,
+                        payloadLength);
                     buffer = buffer.Slice(headerLength); // header is fully consumed now
-                    return frame;
+                    return true;
                 }
 
                 private unsafe int SlowCopyFirst(ReadableBuffer buffer, byte* header, int bytes)
@@ -488,7 +544,7 @@ namespace Channels.WebSockets
                     foreach(var span in buffer)
                     {
                         byte* ptr = (byte*)span.BufferPtr;
-                        int batch = Math.Max(span.Length, bytes), pending = batch;
+                        int batch = Math.Min(span.Length, bytes), pending = batch;
                         while(pending != 0)
                         {
                             *header++ = *ptr++;
@@ -507,7 +563,7 @@ namespace Channels.WebSockets
                 {
                     throw new NotImplementedException();
                 }
-                internal override WebSocketsFrame TryReadFrame(ref ReadableBuffer buffer, out int payloadLength)
+                internal override bool TryReadFrame(ref ReadableBuffer buffer, out WebSocketsFrame frame)
                 {
                     throw new NotImplementedException();
                 }
@@ -515,7 +571,7 @@ namespace Channels.WebSockets
 
             internal abstract Task CompleteHandshakeAsync(HttpRequest request, WebSocketConnection socket);
 
-            internal abstract WebSocketsFrame TryReadFrame(ref ReadableBuffer buffer, out int payloadLength);
+            internal abstract bool TryReadFrame(ref ReadableBuffer buffer, out WebSocketsFrame frame);
         }
 
         internal struct HttpRequest : IDisposable

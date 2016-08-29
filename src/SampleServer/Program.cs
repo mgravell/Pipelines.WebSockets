@@ -14,6 +14,10 @@ namespace ConsoleApplication
         {
             using (var server = new WebSocketServer(IPAddress.Loopback, 5001))
             {
+                server.Text += (conn, msg) =>
+                {
+                    Console.WriteLine($"Received: {msg}");
+                };
                 server.Start();
                 Console.WriteLine($"Running on {server.IP}:{server.Port}... press any key to test");
                 Console.ReadKey();
@@ -42,7 +46,7 @@ namespace ConsoleApplication
                     await socket.ConnectAsync(uri, token);
                     WriteStatus("connected");
                     var buffer = new byte[2048];
-                    string msg = "hello";
+                    string msg = "hello from client to server";
                     int len = Encoding.ASCII.GetBytes(msg, 0, msg.Length, buffer, 0);
                     WriteStatus("sending...");
                     await socket.SendAsync(new ArraySegment<byte>(buffer, 0, len), WebSocketMessageType.Text, true, token);
