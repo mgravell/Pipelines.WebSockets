@@ -223,7 +223,7 @@ namespace Channels.WebSockets
                                     + "Upgrade: websocket\r\n"
                                     + "Connection: Upgrade\r\n"
                                     + "Sec-WebSocket-Accept: "),
-                    StandardPostfixBytes = Encoding.ASCII.GetBytes("\r\n");
+                    StandardPostfixBytes = Encoding.ASCII.GetBytes("\r\n\r\n");
                 internal override Task CompleteHandshakeAsync(HttpRequest request, WebSocketConnection socket)
                 {
                     var key = request.Headers.GetRaw("Sec-WebSocket-Key");
@@ -297,12 +297,12 @@ namespace Channels.WebSockets
                     if((end - start) != ExpectedKeyLength) throw new ArgumentException(nameof(key));
 
                     // append the suffix
-                    Buffer.BlockCopy(WebSocketKeySuffixBytes, 0, arr, end, WebSocketKeySuffixBytes.Length);
+                    Buffer.BlockCopy(WebSocketKeySuffixBytes, 0, arr, baseOffset + end, WebSocketKeySuffixBytes.Length);
 
                     // compute the hash
                     using (var sha = SHA1.Create())
                     {
-                        var hash = sha.ComputeHash(arr, start,
+                        var hash = sha.ComputeHash(arr, baseOffset + start,
                             ExpectedKeyLength + WebSocketKeySuffixBytes.Length);
                         return Convert.ToBase64String(hash);
                     }
