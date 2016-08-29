@@ -331,10 +331,7 @@ namespace Channels.WebSockets
                 Mask = mask;
             }
             public bool IsMasked => (header2 & 1) != 0;
-            private bool HasFlag(FrameFlags flag)
-            {
-                return (header & (byte)flag) != 0;
-            }
+            private bool HasFlag(FrameFlags flag) => (header & (byte)flag) != 0;
 
             internal unsafe void ApplyMask(ref ReadableBuffer buffer)
             {
@@ -356,6 +353,7 @@ namespace Channels.WebSockets
                             len -= 8;
                         } while (len >= 8);
                     }
+                    // TODO: worth doing an int32 mask here if >= 4?
                     if (len != 0)
                     {
                         var ptr = ((byte*)span.BufferPtr) + (buffer.Length & ~7); // forwards everything except the last chunk
