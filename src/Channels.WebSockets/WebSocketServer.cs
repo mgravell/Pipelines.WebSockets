@@ -63,13 +63,13 @@ namespace Channels.WebSockets
                             await socket.WebSocketProtocol.CompleteHandshakeAsync(request, socket);
                         }
                         await OnHandshakeCompleteAsync(socket);
-
+                        await socket.ProcessIncomingFramesAsync(this);
                     }
                     catch (Exception ex)
                     {// meh, bye bye broken connection
                         WriteStatus(ex.GetType().Name);
                         WriteStatus(ex.Message);
-                    } 
+                    }
                     finally
                     {
                         try { connection.Output.CompleteWriting(); } catch { }
@@ -100,7 +100,74 @@ namespace Channels.WebSockets
             public string Protocol { get; internal set; }
             public string RequestLine { get; internal set; }
             internal WebSocketProtocol WebSocketProtocol { get; set; }
+
+            internal async Task ProcessIncomingFramesAsync(WebSocketServer server)
+            {
+                do
+                {
+                    await connection.Input;
+                }
+                while (TryReadFrame(server));
+            }
+
+            private bool TryReadFrame(WebSocketServer server)
+            {
+                var input = connection.Input;
+                var buffer = input.BeginRead();
+
+                if (buffer.IsEmpty && input.Completion.IsCompleted)
+                {
+                    return false; // that's all, folks
+                }
+
+                int payloadLength;
+                var frame = WebSocketProtocol.TryReadFrame(ref buffer, out payloadLength);
+                if(frame != null)
+                {
+                    // buffer now points to the payload 
+                    server.OnFrameReceived(frame, ref buffer);
+                    // and finally, progress past the frame
+                    if (payloadLength != 0) buffer = buffer.Slice(payloadLength);
+                }
+                
+                input.EndRead(buffer);
+                return true; // keep reading
+            }
         }
+
+        protected void OnFrameReceived(WebSocketsFrame frame, ref ReadableBuffer buffer)
+        {
+            WriteStatus(frame.ToString());
+            switch(frame.OpCode)
+            {
+                case WebSocketsFrame.OpCodes.Binary:
+                    OnBinary(frame, ref buffer);
+                    break;
+                case WebSocketsFrame.OpCodes.Close:
+                    OnClose(frame);
+                    break;
+                case WebSocketsFrame.OpCodes.Continuation:
+                    OnContinuation(frame, ref buffer);
+                    break;
+                case WebSocketsFrame.OpCodes.Ping:
+                    OnPing(frame);
+                    break;
+                case WebSocketsFrame.OpCodes.Pong:
+                    OnPong(frame);
+                    break;
+                case WebSocketsFrame.OpCodes.Text:
+                    OnText(frame, ref buffer);
+                    break;
+            }
+        }
+
+        protected virtual void OnPong(WebSocketsFrame frame) { }
+        protected virtual void OnPing(WebSocketsFrame frame) { }
+        protected virtual void OnClose(WebSocketsFrame frame) { }
+        protected virtual void OnBinary(WebSocketsFrame frame, ref ReadableBuffer buffer) { }
+        protected virtual void OnText(WebSocketsFrame frame, ref ReadableBuffer buffer) { }
+        protected virtual void OnContinuation(WebSocketsFrame frame, ref ReadableBuffer buffer) { }
+
         static readonly char[] Comma = { ',' };
         protected static class TaskResult
         {
@@ -108,7 +175,7 @@ namespace Channels.WebSockets
                 True = Task.FromResult(true),
                 False = Task.FromResult(false);
         }
-        
+
         protected virtual Task<bool> OnAuthenticateAsync(WebSocketConnection connection) => TaskResult.True;
         protected virtual Task OnHandshakeCompleteAsync(WebSocketConnection connection) => TaskResult.True;
 
@@ -208,12 +275,61 @@ namespace Channels.WebSockets
             socket.WebSocketProtocol = protocol;
             return socket;
         }
+        public class WebSocketsFrame
+        {
+            public override string ToString()
+            {
+                return OpCode + ": " + PayloadLength + " bytes (" + flags + ")";
+            }
+            private Flags flags = Flags.IsFinal;
+            [Flags]
+            private enum Flags : byte
+            {
+                IsFinal = 128,
+                Reserved1 = 64,
+                Reserved2 = 32,
+                Reserved3 = 16,
+                None = 0
+            }
+            public enum OpCodes
+            {
+                Continuation = 0,
+                Text = 1,
+                Binary = 2,
+                // 3-7 reserved for non-control op-codes
+                Close = 8,
+                Ping = 9,
+                Pong = 10,
+                // 11-15 reserved for control op-codes
+            }
+            public WebSocketsFrame()
+            { }
+            private bool HasFlag(Flags flag)
+            {
+                return (flags & flag) != 0;
+            }
+            private void SetFlag(Flags flag, bool value)
+            {
+                if (value) flags |= flag;
+                else flags &= ~flag;
+            }
 
+            public bool IsControlFrame { get { return (OpCode & OpCodes.Close) != 0; } }
+            public int? Mask { get; set; }
+            public OpCodes OpCode { get; set; }
+            public bool IsFinal { get { return HasFlag(Flags.IsFinal); } set { SetFlag(Flags.IsFinal, value); } }
+            public bool Reserved1 { get { return HasFlag(Flags.Reserved1); } set { SetFlag(Flags.Reserved1, value); } }
+            public bool Reserved2 { get { return HasFlag(Flags.Reserved2); } set { SetFlag(Flags.Reserved2, value); } }
+            public bool Reserved3 { get { return HasFlag(Flags.Reserved3); } set { SetFlag(Flags.Reserved3, value); } }
+
+            public int PayloadLength { get; set; }
+
+        }
         internal abstract class WebSocketProtocol
         {
             internal static readonly WebSocketProtocol RFC6455_13 = new WebSocketProtocol_RFC6455_13(), Hixie76_00 = new WebSocketProtocol_Hixie76_00();
 
-            public abstract string Name { get;}
+            public abstract string Name { get; }
 
             class WebSocketProtocol_RFC6455_13 : WebSocketProtocol
             {
@@ -227,7 +343,7 @@ namespace Channels.WebSockets
                 internal override Task CompleteHandshakeAsync(HttpRequest request, WebSocketConnection socket)
                 {
                     var key = request.Headers.GetRaw("Sec-WebSocket-Key");
-                    
+
                     var connection = socket.Connection;
 
                     const int ResponseTokenLength = 28;
@@ -277,24 +393,24 @@ namespace Channels.WebSockets
                     const int ExpectedKeyLength = 24;
 
                     int len = key.Length, start = 0, end = len, baseOffset = buffer.Offset;
-                    if(len < ExpectedKeyLength) throw new ArgumentException("Undersized key", nameof(key));
+                    if (len < ExpectedKeyLength) throw new ArgumentException("Undersized key", nameof(key));
                     byte[] arr = buffer.Array;
                     // note that it might be padded; if so we'll need to trim - allow some slack
                     if ((len + WebSocketKeySuffixBytes.Length) > buffer.Length) throw new ArgumentException("Oversized key", nameof(key));
                     // in-place "trim" to find the base-64 piece
                     key.CopyTo(arr, baseOffset);
-                    for(int i = 0; i < len; i++)
+                    for (int i = 0; i < len; i++)
                     {
                         if (IsBase64(arr[baseOffset + i])) break;
                         start++;
                     }
-                    for(int i = len-1;i>=0;i--)
+                    for (int i = len - 1; i >= 0; i--)
                     {
                         if (IsBase64(arr[baseOffset + i])) break;
                         end--;
                     }
-                    
-                    if((end - start) != ExpectedKeyLength) throw new ArgumentException(nameof(key));
+
+                    if ((end - start) != ExpectedKeyLength) throw new ArgumentException(nameof(key));
 
                     // append the suffix
                     Buffer.BlockCopy(WebSocketKeySuffixBytes, 0, arr, baseOffset + end, WebSocketKeySuffixBytes.Length);
@@ -307,6 +423,82 @@ namespace Channels.WebSockets
                         return Convert.ToBase64String(hash);
                     }
                 }
+                protected internal static unsafe int ReadInt32(byte* buffer, int offset)
+                {
+                    // endian-safe
+                    return (buffer[offset] << 24) | (buffer[offset + 1] << 16) | (buffer[offset + 2] << 8) | buffer[offset + 3];
+                }
+                internal unsafe override WebSocketsFrame TryReadFrame(ref ReadableBuffer buffer, out int payloadLength)
+                {
+                    payloadLength = 0;
+                    int bytesAvailable = buffer.Length;
+                    if (bytesAvailable < 2) return null; // can't read that; frame takes at minimum two bytes
+
+                    // header is at most 14 bytes; can afford the stack for that
+                    byte* header = stackalloc byte[14];
+                    SlowCopyFirst(buffer, header, 14);
+
+                    bool masked = (header[1] & 128) != 0;
+                    int tmp = header[1] & 127;
+                    int headerLength, maskOffset;
+                    switch (tmp)
+                    {
+                        case 126:
+                            headerLength = masked ? 8 : 4;
+                            if (bytesAvailable < headerLength) return null;
+                            payloadLength = (header[2] << 8) | header[3];
+                            maskOffset = 4;
+                            break;
+                        case 127:
+                            headerLength = masked ? 14 : 10;
+                            if (bytesAvailable < headerLength) return null;
+                            int big = ReadInt32(header, 2), little = ReadInt32(header, 6);
+                            if (big != 0 || little < 0) throw new ArgumentOutOfRangeException(); // seriously, we're not going > 2GB
+                            payloadLength = little;
+                            maskOffset = 10;
+                            break;
+                        default:
+                            headerLength = masked ? 6 : 2;
+                            if (bytesAvailable < headerLength) return null;
+                            payloadLength = tmp;
+                            maskOffset = 2;
+                            break;
+                    }
+                    if (bytesAvailable < headerLength + payloadLength) return null; // body isn't intact
+
+
+                    var frame = new WebSocketsFrame();
+
+                    frame.IsFinal = (header[0] & 128) != 0;
+                    frame.Reserved1 = (header[0] & 64) != 0;
+                    frame.Reserved2 = (header[0] & 32) != 0;
+                    frame.Reserved3 = (header[0] & 16) != 0;
+                    frame.OpCode = (WebSocketsFrame.OpCodes)(header[0] & 15);
+                    frame.Mask = masked ? (int?)ReadInt32(header, maskOffset) : null;
+                    frame.PayloadLength = payloadLength;
+                    buffer = buffer.Slice(headerLength); // header is fully consumed now
+                    return frame;
+                }
+
+                private unsafe int SlowCopyFirst(ReadableBuffer buffer, byte* header, int bytes)
+                {
+                    if (bytes < 0) throw new ArgumentOutOfRangeException(nameof(bytes));
+                    if (bytes == 0) return 0;
+                    int copied = 0;
+                    foreach(var span in buffer)
+                    {
+                        byte* ptr = (byte*)span.BufferPtr;
+                        int batch = Math.Max(span.Length, bytes), pending = batch;
+                        while(pending != 0)
+                        {
+                            *header++ = *ptr++;
+                            pending--;
+                        }
+                        copied += batch;
+                        if (bytes == 0) break;
+                    }
+                    return copied;
+                }
             }
             class WebSocketProtocol_Hixie76_00 : WebSocketProtocol
             {
@@ -315,9 +507,15 @@ namespace Channels.WebSockets
                 {
                     throw new NotImplementedException();
                 }
+                internal override WebSocketsFrame TryReadFrame(ref ReadableBuffer buffer, out int payloadLength)
+                {
+                    throw new NotImplementedException();
+                }
             }
 
             internal abstract Task CompleteHandshakeAsync(HttpRequest request, WebSocketConnection socket);
+
+            internal abstract WebSocketsFrame TryReadFrame(ref ReadableBuffer buffer, out int payloadLength);
         }
 
         internal struct HttpRequest : IDisposable
@@ -334,7 +532,7 @@ namespace Channels.WebSockets
             public ReadableBuffer Method { get; private set; }
             public ReadableBuffer Path { get; private set; }
             public ReadableBuffer HttpVersion { get; private set; }
-            
+
             public HttpRequestHeaders Headers { get; private set; }
 
             public HttpRequest(ReadableBuffer method, ReadableBuffer path, ReadableBuffer httpVersion, Dictionary<string, ReadableBuffer> headers)
@@ -350,7 +548,7 @@ namespace Channels.WebSockets
             private Dictionary<string, ReadableBuffer> headers;
             public void Dispose()
             {
-                if(headers != null)
+                if (headers != null)
                 {
                     foreach (var pair in headers)
                         pair.Value.Dispose();

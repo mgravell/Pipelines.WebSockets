@@ -19,12 +19,12 @@ namespace ConsoleApplication
                 Console.ReadKey();
                 CancellationTokenSource cancel = new CancellationTokenSource();
                 Task.Run(() => Execute(cancel.Token));
-                
+
                 Console.WriteLine($"Press any key to exit");
                 Console.ReadKey();
                 cancel.Cancel();
                 Console.WriteLine("Shutting down...");
-            }                
+            }
         }
 
         private static void WriteStatus(string message)
@@ -53,12 +53,12 @@ namespace ConsoleApplication
                     WriteStatus(result.MessageType.ToString());
                     WriteStatus(Encoding.ASCII.GetString(buffer, 0, result.Count));
                 }
-            } catch(Exception ex)
+            }
+            catch (Exception ex)
             {
                 WriteStatus(ex.GetType().Name);
                 WriteStatus(ex.Message);
             }
-
         }
     }
 }
