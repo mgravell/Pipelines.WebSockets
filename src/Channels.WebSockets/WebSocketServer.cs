@@ -10,6 +10,7 @@ using System.Linq;
 using System.Collections;
 using System.Text;
 using System.Security.Cryptography;
+using System.Diagnostics;
 
 namespace Channels.WebSockets
 {
@@ -48,18 +49,27 @@ namespace Channels.WebSockets
                 {
                     try
                     {
-                        var request = await ParseHttpRequest(connection.Input);
+                        WriteStatus("Connected");
+                        WebSocketConnection socket;
+                        WriteStatus("Parsing http request...");
+                        using (var request = await ParseHttpRequest(connection.Input))
+                        {
+                            WriteStatus("Identifying protocol...");
+                            socket = GetProtocol(connection, request);
+                            WriteStatus($"Protocol: {socket.WebSocketProtocol.Name}");
+                            WriteStatus("Authenticating...");
+                            if (!await OnAuthenticateAsync(socket)) throw new InvalidOperationException("Authentication refused");
+                            WriteStatus("Completing handshake...");
+                            await socket.WebSocketProtocol.CompleteHandshakeAsync(request, socket);
+                        }
+                        await OnHandshakeCompleteAsync(socket);
 
-                        var socket = GetProtocol(connection, request);
-
-                        if (!OnAuthenticate(socket)) throw new InvalidOperationException("Authentication refused");
-                        socket.WebSocketProtocol.CompleteHandshake(request, socket);
-                        OnHandshakeComplete(socket);                       
-
-                        
-                        
                     }
-                    catch { } // meh, bye bye broken connection
+                    catch (Exception ex)
+                    {// meh, bye bye broken connection
+                        WriteStatus(ex.GetType().Name);
+                        WriteStatus(ex.Message);
+                    } 
                     finally
                     {
                         try { connection.Output.CompleteWriting(); } catch { }
@@ -69,10 +79,17 @@ namespace Channels.WebSockets
                 listener.Start();
             }
         }
+
+        [Conditional("DEBUG")]
+        internal static void WriteStatus(string message)
+        {
+            Console.WriteLine($"[Server:{Environment.CurrentManagedThreadId}]: {message}");
+        }
+
         public class WebSocketConnection
         {
             private UvTcpConnection connection;
-
+            internal UvTcpConnection Connection => connection;
             internal WebSocketConnection(UvTcpConnection connection)
             {
                 this.connection = connection;
@@ -85,9 +102,15 @@ namespace Channels.WebSockets
             internal WebSocketProtocol WebSocketProtocol { get; set; }
         }
         static readonly char[] Comma = { ',' };
-
-        protected virtual bool OnAuthenticate(WebSocketConnection connection) => true;
-        protected virtual void OnHandshakeComplete(WebSocketConnection connection) { }
+        protected static class TaskResult
+        {
+            public static readonly Task<bool>
+                True = Task.FromResult(true),
+                False = Task.FromResult(false);
+        }
+        
+        protected virtual Task<bool> OnAuthenticateAsync(WebSocketConnection connection) => TaskResult.True;
+        protected virtual Task OnHandshakeCompleteAsync(WebSocketConnection connection) => TaskResult.True;
 
         private WebSocketConnection GetProtocol(UvTcpConnection connection, HttpRequest request)
         {
@@ -189,24 +212,50 @@ namespace Channels.WebSockets
         internal abstract class WebSocketProtocol
         {
             internal static readonly WebSocketProtocol RFC6455_13 = new WebSocketProtocol_RFC6455_13(), Hixie76_00 = new WebSocketProtocol_Hixie76_00();
+
+            public abstract string Name { get;}
+
             class WebSocketProtocol_RFC6455_13 : WebSocketProtocol
             {
-                internal override void CompleteHandshake(HttpRequest request, WebSocketConnection socket)
-                {
-                    var key = request.Headers.GetAscii("Sec-WebSocket-Key");
-                    if (key != null) key = key.Trim();
-                    string response = ComputeReply(key);
-
-                    var builder = new StringBuilder(
-                                      "HTTP/1.1 101 Switching Protocols\r\n"
+                public override string Name => "RFC6455";
+                static readonly byte[]
+                    StandardPrefixBytes = Encoding.ASCII.GetBytes("HTTP/1.1 101 Switching Protocols\r\n"
                                     + "Upgrade: websocket\r\n"
                                     + "Connection: Upgrade\r\n"
-                                    + "Sec-WebSocket-Accept: ").Append(response).Append("\r\n");
+                                    + "Sec-WebSocket-Accept: "),
+                    StandardPostfixBytes = Encoding.ASCII.GetBytes("\r\n");
+                internal override Task CompleteHandshakeAsync(HttpRequest request, WebSocketConnection socket)
+                {
+                    var key = request.Headers.GetRaw("Sec-WebSocket-Key");
+                    
+                    var connection = socket.Connection;
 
-                    builder.Append("\r\n");
+                    const int ResponseTokenLength = 28;
+                    // how do I free this? do I need to?
+                    var buffer = connection.Output.Alloc(StandardPrefixBytes.Length +
+                        ResponseTokenLength + StandardPostfixBytes.Length);
+                    string hashBase64 = ComputeReply(key, buffer.Memory);
+                    if (hashBase64.Length != ResponseTokenLength) throw new InvalidOperationException("Unexpected response key length");
+                    WebSocketServer.WriteStatus($"Response token: {hashBase64}");
+
+                    buffer.Write(StandardPrefixBytes, 0, StandardPrefixBytes.Length);
+                    buffer.UpdateWritten(Encoding.ASCII.GetBytes(hashBase64, 0, hashBase64.Length, buffer.Memory.Array, buffer.Memory.Offset));
+                    buffer.Write(StandardPostfixBytes, 0, StandardPostfixBytes.Length);
+
+                    return connection.Output.WriteAsync(buffer);
                 }
                 static readonly byte[] WebSocketKeySuffixBytes = Encoding.ASCII.GetBytes("258EAFA5-E914-47DA-95CA-C5AB0DC85B11");
-                internal static string ComputeReply(string webSocketKey)
+
+                static bool IsBase64(byte value)
+                {
+                    return (value >= (byte)'0' && value <= (byte)'9')
+                        || (value >= (byte)'a' && value <= (byte)'z')
+                        || (value >= (byte)'A' && value <= (byte)'Z')
+                        || (value == (byte)'/')
+                        || (value == (byte)'+')
+                        || (value == (byte)'=');
+                }
+                internal static string ComputeReply(ReadableBuffer key, BufferSpan buffer)
                 {
                     //To prove that the handshake was received, the server has to take two
                     //pieces of information and combine them to form a response.  The first
@@ -224,38 +273,69 @@ namespace Channels.WebSockets
                     //SHA-1 hash (160 bits) [FIPS.180-3], base64-encoded (see Section 4 of
                     //[RFC4648]), of this concatenation is then returned in the server's
                     //handshake.
-                    if (webSocketKey  == null || webSocketKey.Length != 24) throw new ArgumentException(nameof(webSocketKey));
 
-                    int len = 24 + WebSocketKeySuffixBytes.Length;
-                    byte[] buffer = new byte[len]; // TODO optimize / lease etc
-                    int offset = Encoding.ASCII.GetBytes(webSocketKey, 0, webSocketKey.Length, buffer, 0);
-                    //foreach(var span in webSocketKey)
-                    //{
-                    //    Buffer.BlockCopy(span.Array, span.Offset, buffer, offset, span.Length);
-                    //    offset += span.Length;
-                    //}
-                    Buffer.BlockCopy(WebSocketKeySuffixBytes, 0, buffer, offset, WebSocketKeySuffixBytes.Length);
+                    const int ExpectedKeyLength = 24;
+
+                    int len = key.Length, start = 0, end = len, baseOffset = buffer.Offset;
+                    if(len < ExpectedKeyLength) throw new ArgumentException("Undersized key", nameof(key));
+                    byte[] arr = buffer.Array;
+                    // note that it might be padded; if so we'll need to trim - allow some slack
+                    if ((len + WebSocketKeySuffixBytes.Length) > buffer.Length) throw new ArgumentException("Oversized key", nameof(key));
+                    // in-place "trim" to find the base-64 piece
+                    key.CopyTo(arr, baseOffset);
+                    for(int i = 0; i < len; i++)
+                    {
+                        if (IsBase64(arr[baseOffset + i])) break;
+                        start++;
+                    }
+                    for(int i = len-1;i>=0;i--)
+                    {
+                        if (IsBase64(arr[baseOffset + i])) break;
+                        end--;
+                    }
+                    
+                    if((end - start) != ExpectedKeyLength) throw new ArgumentException(nameof(key));
+
+                    // append the suffix
+                    Buffer.BlockCopy(WebSocketKeySuffixBytes, 0, arr, end, WebSocketKeySuffixBytes.Length);
+
+                    // compute the hash
                     using (var sha = SHA1.Create())
                     {
-                        return Convert.ToBase64String(sha.ComputeHash(buffer, 0, len));
+                        var hash = sha.ComputeHash(arr, start,
+                            ExpectedKeyLength + WebSocketKeySuffixBytes.Length);
+                        return Convert.ToBase64String(hash);
                     }
                 }
             }
             class WebSocketProtocol_Hixie76_00 : WebSocketProtocol
             {
-                internal override void CompleteHandshake(HttpRequest request, WebSocketConnection socket)
+                public override string Name => "Hixie76";
+                internal override Task CompleteHandshakeAsync(HttpRequest request, WebSocketConnection socket)
                 {
                     throw new NotImplementedException();
                 }
             }
 
-            internal abstract void CompleteHandshake(HttpRequest request, WebSocketConnection socket);
+            internal abstract Task CompleteHandshakeAsync(HttpRequest request, WebSocketConnection socket);
         }
 
-        internal struct HttpRequest
+        internal struct HttpRequest : IDisposable
         {
-            public readonly ReadableBuffer Method, Path, HttpVersion;
-            public readonly HttpRequestHeaders Headers;
+            public void Dispose()
+            {
+                Method.Dispose();
+                Path.Dispose();
+                HttpVersion.Dispose();
+                Headers.Dispose();
+                Method = Path = HttpVersion = default(ReadableBuffer);
+                Headers = default(HttpRequestHeaders);
+            }
+            public ReadableBuffer Method { get; private set; }
+            public ReadableBuffer Path { get; private set; }
+            public ReadableBuffer HttpVersion { get; private set; }
+            
+            public HttpRequestHeaders Headers { get; private set; }
 
             public HttpRequest(ReadableBuffer method, ReadableBuffer path, ReadableBuffer httpVersion, Dictionary<string, ReadableBuffer> headers)
             {
@@ -265,18 +345,26 @@ namespace Channels.WebSockets
                 Headers = new HttpRequestHeaders(headers);
             }
         }
-        internal struct HttpRequestHeaders : IEnumerable<KeyValuePair<string,ReadableBuffer>>
+        internal struct HttpRequestHeaders : IEnumerable<KeyValuePair<string, ReadableBuffer>>, IDisposable
         {
             private Dictionary<string, ReadableBuffer> headers;
-
+            public void Dispose()
+            {
+                if(headers != null)
+                {
+                    foreach (var pair in headers)
+                        pair.Value.Dispose();
+                }
+                headers = null;
+            }
             public HttpRequestHeaders(Dictionary<string, ReadableBuffer> headers)
             {
                 this.headers = headers;
             }
             public bool ContainsKey(string key) => headers.ContainsKey(key);
-            IEnumerator<KeyValuePair<string, ReadableBuffer>> IEnumerable<KeyValuePair<string, ReadableBuffer>>.GetEnumerator() => ((IEnumerable<KeyValuePair<string,ReadableBuffer>>)headers).GetEnumerator();
+            IEnumerator<KeyValuePair<string, ReadableBuffer>> IEnumerable<KeyValuePair<string, ReadableBuffer>>.GetEnumerator() => ((IEnumerable<KeyValuePair<string, ReadableBuffer>>)headers).GetEnumerator();
             IEnumerator IEnumerable.GetEnumerator() => ((IEnumerable)headers).GetEnumerator();
-            public Dictionary<string,ReadableBuffer>.Enumerator GetEnumerator() => headers.GetEnumerator();
+            public Dictionary<string, ReadableBuffer>.Enumerator GetEnumerator() => headers.GetEnumerator();
 
             public string GetAscii(string key)
             {
@@ -305,160 +393,173 @@ namespace Channels.WebSockets
             _vectorColons = new Vector<byte>((byte)':');
         private static async Task<HttpRequest> ParseHttpRequest(IReadableChannel _input)
         {
-            ParsingState _state = ParsingState.StartLine;
             ReadableBuffer Method = default(ReadableBuffer), Path = default(ReadableBuffer), HttpVersion = default(ReadableBuffer);
             Dictionary<string, ReadableBuffer> Headers = new Dictionary<string, ReadableBuffer>();
-            while (true)
+            try
             {
-                await _input;
-
-                var buffer = _input.BeginRead();
-                var consumed = buffer.Start;
+                ParsingState _state = ParsingState.StartLine;
                 bool needMoreData = true;
-
-                try
+                while (needMoreData)
                 {
-                    if (buffer.IsEmpty && _input.Completion.IsCompleted)
+                    await _input;
+
+                    var buffer = _input.BeginRead();
+                    var consumed = buffer.Start;
+                    needMoreData = true;
+
+                    try
                     {
-                        throw new EndOfStreamException();
-                    }
-
-                    if (_state == ParsingState.StartLine)
-                    {
-                        // Find \n
-                        var delim = buffer.IndexOf(ref _vectorLFs);
-                        if (delim.IsEnd)
+                        if (buffer.IsEmpty && _input.Completion.IsCompleted)
                         {
-                            continue;
+                            throw new EndOfStreamException();
                         }
 
-                        // Grab the entire start line
-                        var startLine = buffer.Slice(0, delim);
-
-                        // Move the buffer to the rest
-                        buffer = buffer.Slice(delim).Slice(1);
-
-                        delim = startLine.IndexOf(ref _vectorSpaces);
-                        if (delim.IsEnd)
+                        if (_state == ParsingState.StartLine)
                         {
-                            throw new Exception();
+                            // Find \n
+                            var delim = buffer.IndexOf(ref _vectorLFs);
+                            if (delim.IsEnd)
+                            {
+                                continue;
+                            }
+
+                            // Grab the entire start line
+                            var startLine = buffer.Slice(0, delim);
+
+                            // Move the buffer to the rest
+                            buffer = buffer.Slice(delim).Slice(1);
+
+                            delim = startLine.IndexOf(ref _vectorSpaces);
+                            if (delim.IsEnd)
+                            {
+                                throw new Exception();
+                            }
+
+                            var method = startLine.Slice(0, delim);
+                            Method = method.Clone();
+
+                            // Skip ' '
+                            startLine = startLine.Slice(delim).Slice(1);
+
+                            delim = startLine.IndexOf(ref _vectorSpaces);
+                            if (delim.IsEnd)
+                            {
+                                throw new Exception();
+                            }
+
+                            var path = startLine.Slice(0, delim);
+                            Path = path.Clone();
+
+                            // Skip ' '
+                            startLine = startLine.Slice(delim).Slice(1);
+
+                            delim = startLine.IndexOf(ref _vectorCRs);
+                            if (delim.IsEnd)
+                            {
+                                throw new Exception();
+                            }
+
+                            var httpVersion = startLine.Slice(0, delim);
+                            HttpVersion = httpVersion.Clone();
+
+                            _state = ParsingState.Headers;
+                            consumed = startLine.End;
                         }
 
-                        var method = startLine.Slice(0, delim);
-                        Method = method.Clone();
+                        // Parse headers
+                        // key: value\r\n
 
-                        // Skip ' '
-                        startLine = startLine.Slice(delim).Slice(1);
-
-                        delim = startLine.IndexOf(ref _vectorSpaces);
-                        if (delim.IsEnd)
+                        while (!buffer.IsEmpty)
                         {
-                            throw new Exception();
-                        }
-
-                        var path = startLine.Slice(0, delim);
-                        Path = path.Clone();
-
-                        // Skip ' '
-                        startLine = startLine.Slice(delim).Slice(1);
-
-                        delim = startLine.IndexOf(ref _vectorCRs);
-                        if (delim.IsEnd)
-                        {
-                            throw new Exception();
-                        }
-
-                        var httpVersion = startLine.Slice(0, delim);
-                        HttpVersion = httpVersion.Clone();
-
-                        _state = ParsingState.Headers;
-                        consumed = startLine.End;
-                    }
-
-                    // Parse headers
-                    // key: value\r\n
-
-                    while (!buffer.IsEmpty)
-                    {
-                        var ch = buffer.Peek();
-
-                        if (ch == -1)
-                        {
-                            break;
-                        }
-
-                        if (ch == '\r')
-                        {
-                            // Check for final CRLF.
-                            buffer = buffer.Slice(1);
-                            ch = buffer.Peek();
-                            buffer = buffer.Slice(1);
+                            var ch = buffer.Peek();
 
                             if (ch == -1)
                             {
                                 break;
                             }
-                            else if (ch == '\n')
+
+                            if (ch == '\r')
                             {
-                                consumed = buffer.Start;
-                                needMoreData = false;
+                                // Check for final CRLF.
+                                buffer = buffer.Slice(1);
+                                ch = buffer.Peek();
+                                buffer = buffer.Slice(1);
+
+                                if (ch == -1)
+                                {
+                                    break;
+                                }
+                                else if (ch == '\n')
+                                {
+                                    consumed = buffer.Start;
+                                    needMoreData = false;
+                                    break;
+                                }
+
+                                // Headers don't end in CRLF line.
+                                throw new Exception();
+                            }
+
+                            var headerName = default(ReadableBuffer);
+                            var headerValue = default(ReadableBuffer);
+
+                            // End of the header
+                            // \n
+                            var delim = buffer.IndexOf(ref _vectorLFs);
+                            if (delim.IsEnd)
+                            {
                                 break;
                             }
 
-                            // Headers don't end in CRLF line.
-                            throw new Exception();
+                            var headerPair = buffer.Slice(0, delim);
+                            buffer = buffer.Slice(delim).Slice(1);
+
+                            // :
+                            delim = headerPair.IndexOf(ref _vectorColons);
+                            if (delim.IsEnd)
+                            {
+                                throw new Exception();
+                            }
+
+                            headerName = headerPair.Slice(0, delim).TrimStart();
+                            headerPair = headerPair.Slice(delim).Slice(1);
+
+                            // \r
+                            delim = headerPair.IndexOf(ref _vectorCRs);
+                            if (delim.IsEnd)
+                            {
+                                // Bad request
+                                throw new Exception();
+                            }
+
+                            headerValue = headerPair.Slice(0, delim).TrimStart();
+
+                            Headers[ToHeaderKey(ref headerName)] = headerValue.Clone();
+
+                            // Move the consumed
+                            consumed = buffer.Start;
                         }
-
-                        var headerName = default(ReadableBuffer);
-                        var headerValue = default(ReadableBuffer);
-
-                        // End of the header
-                        // \n
-                        var delim = buffer.IndexOf(ref _vectorLFs);
-                        if (delim.IsEnd)
-                        {
-                            break;
-                        }
-
-                        var headerPair = buffer.Slice(0, delim);
-                        buffer = buffer.Slice(delim).Slice(1);
-
-                        // :
-                        delim = headerPair.IndexOf(ref _vectorColons);
-                        if (delim.IsEnd)
-                        {
-                            throw new Exception();
-                        }
-
-                        headerName = headerPair.Slice(0, delim).TrimStart();
-                        headerPair = headerPair.Slice(delim).Slice(1);
-
-                        // \r
-                        delim = headerPair.IndexOf(ref _vectorCRs);
-                        if (delim.IsEnd)
-                        {
-                            // Bad request
-                            throw new Exception();
-                        }
-
-                        headerValue = headerPair.Slice(0, delim).TrimStart();
-
-                        Headers[ToHeaderKey(ref headerName)] = headerValue.Clone();
-
-                        // Move the consumed
-                        consumed = buffer.Start;
+                    }
+                    finally
+                    {
+                        _input.EndRead(consumed);
                     }
                 }
-                finally
+                var result = new HttpRequest(Method, Path, HttpVersion, Headers);
+                Method = Path = HttpVersion = default(ReadableBuffer);
+                Headers = null;
+                return result;
+            }
+            finally
+            {
+                Method.Dispose();
+                Path.Dispose();
+                HttpVersion.Dispose();
+                if (Headers != null)
                 {
-                    _input.EndRead(consumed);
+                    foreach (var pair in Headers)
+                        pair.Value.Dispose();
                 }
-
-                if (needMoreData)
-                {
-                    continue;
-                }
-                return new HttpRequest(Method, Path, HttpVersion, Headers);
             }
         }
 
