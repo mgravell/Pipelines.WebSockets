@@ -11,6 +11,7 @@ using System.Collections;
 using System.Text;
 using System.Security.Cryptography;
 using System.Diagnostics;
+using System.Runtime.CompilerServices;
 
 namespace Channels.WebSockets
 {
@@ -121,16 +122,16 @@ namespace Channels.WebSockets
                 }
 
                 WebSocketsFrame frame;
-                
-                if(WebSocketProtocol.TryReadFrame(ref buffer, out frame))
+
+                if (WebSocketProtocol.TryReadFrame(ref buffer, out frame))
                 {
                     int payloadLength = frame.PayloadLength;
                     // buffer now points to the payload 
-                    if(!frame.IsMasked)
+                    if (!frame.IsMasked)
                     {
                         throw new InvalidOperationException("Client-to-server frames should be masked");
                     }
-                    if(frame.IsControlFrame && !frame.IsFinal)
+                    if (frame.IsControlFrame && !frame.IsFinal)
                     {
                         throw new InvalidOperationException("Control frames cannot be fragmented");
                     }
@@ -146,7 +147,7 @@ namespace Channels.WebSockets
         protected void OnFrameReceived(WebSocketConnection connection, ref WebSocketsFrame frame, ref ReadableBuffer buffer)
         {
             WriteStatus(frame.ToString());
-            switch(frame.OpCode)
+            switch (frame.OpCode)
             {
                 case WebSocketsFrame.OpCodes.Binary:
                     OnBinary(connection, ref frame, ref buffer);
@@ -177,14 +178,14 @@ namespace Channels.WebSockets
         protected virtual void OnText(WebSocketConnection connection, ref WebSocketsFrame frame, ref ReadableBuffer buffer)
         {
             var handler = Text;
-            if(handler != null)
+            if (handler != null)
             {
                 frame.ApplyMask(ref buffer);
                 handler(connection, buffer.GetUtf8String());
             }
         }
         public event Action<WebSocketConnection, string> Text;
-        
+
 
         static readonly char[] Comma = { ',' };
         protected static class TaskResult
@@ -327,7 +328,7 @@ namespace Channels.WebSockets
             {
                 this.header = header;
                 header2 = (byte)(isMasked ? 1 : 0);
-                PayloadLength = payloadLength;                
+                PayloadLength = payloadLength;
                 Mask = mask;
             }
             public bool IsMasked => (header2 & 1) != 0;
@@ -340,18 +341,18 @@ namespace Channels.WebSockets
                 if (mask == 0) return;
                 mask = (mask << 32) | mask;
 
-                foreach(var span in buffer)
+                foreach (var span in buffer)
                 {
                     int len = span.Length;
 
-                    if (len >= 8)
+                    if ((len & ~7) != 0) // >= 8
                     {
                         var ptr = (ulong*)span.BufferPtr;
                         do
                         {
                             (*ptr++) ^= mask;
                             len -= 8;
-                        } while (len >= 8);
+                        } while ((len & ~7) != 0); // >= 8
                     }
                     // TODO: worth doing an int32 mask here if >= 4?
                     if (len != 0)
@@ -369,7 +370,7 @@ namespace Channels.WebSockets
                 }
             }
 
-            
+
             public bool IsControlFrame { get { return (header & (byte)OpCodes.Close) != 0; } }
             public int Mask { get; }
             public OpCodes OpCode => (OpCodes)(header & 15);
@@ -494,9 +495,11 @@ namespace Channels.WebSockets
                     int payloadLength, bytesAvailable = buffer.Length;
                     if (bytesAvailable < 2) return false; // can't read that; frame takes at minimum two bytes
 
-                    // header is at most 14 bytes; can afford the stack for that
-                    byte* header = stackalloc byte[14];
-                    SlowCopyFirst(buffer, header, 14);
+                    // header is at most 14 bytes; can afford the stack for that - but note that if we aim for 16 bytes instead,
+                    // we will usually benefit from using 2 qword copies (handled internally); very very small messages ('a') might
+                    // have to use the slower version, but... meh
+                    byte* header = stackalloc byte[16];
+                    SlowCopyFirst(buffer, header, 16);
 
                     bool masked = (header[1] & 128) != 0;
                     int tmp = header[1] & 127;
@@ -534,24 +537,49 @@ namespace Channels.WebSockets
                     return true;
                 }
 
-                private unsafe int SlowCopyFirst(ReadableBuffer buffer, byte* header, int bytes)
+                private unsafe uint SlowCopyFirst(ReadableBuffer buffer, byte* destination, uint bytes)
                 {
-                    if (bytes < 0) throw new ArgumentOutOfRangeException(nameof(bytes));
                     if (bytes == 0) return 0;
-                    int copied = 0;
-                    foreach(var span in buffer)
+                    if (buffer.IsSingleSpan)
                     {
-                        byte* ptr = (byte*)span.BufferPtr;
-                        int batch = Math.Min(span.Length, bytes), pending = batch;
-                        while(pending != 0)
-                        {
-                            *header++ = *ptr++;
-                            pending--;
-                        }
-                        copied += batch;
-                        if (bytes == 0) break;
+                        var span = buffer.FirstSpan;
+                        uint batch = Math.Min((uint)span.Length, bytes);
+                        Copy((byte*)span.BufferPtr, destination, batch);
+                        return batch;
                     }
-                    return copied;
+                    else
+                    {
+                        uint copied = 0;
+                        foreach (var span in buffer)
+                        {
+                            uint batch = Math.Min((uint)span.Length, bytes);
+                            Copy((byte*)span.BufferPtr, destination, batch);
+                            destination += batch;
+                            copied += batch;
+                            bytes -= batch;
+                            if (bytes == 0) break;
+                        }
+                        return copied;
+                    }
+                }
+            }
+            [MethodImpl(MethodImplOptions.AggressiveInlining)]
+            static unsafe void Copy(byte* source, byte* destination, uint bytes)
+            {
+                if ((bytes & ~7) != 0) // >= 8
+                {
+                    ulong* source8 = (ulong*)source, destination8 = (ulong*)destination;
+                    do
+                    {
+                        *destination8++ = *source8++;
+                        bytes -= 8;
+                    } while ((bytes & ~7) != 0); // >= 8
+                    source = (byte*)source8;
+                    destination = (byte*)destination8;
+                }
+                while (bytes-- != 0)
+                {
+                    *destination++ = *source++;
                 }
             }
             class WebSocketProtocol_Hixie76_00 : WebSocketProtocol
