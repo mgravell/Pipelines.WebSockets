@@ -61,10 +61,15 @@ namespace Channels.WebSockets
             int count = 0;
             foreach (var pair in connections)
             {
-                if (predicate == null || predicate(pair.Key))
+                var conn = pair.Key;
+                if (!conn.IsClosed && (predicate == null || predicate(conn)))
                 {
-                    await pair.Key.SendAsync(opCode, message);
-                    count++;
+                    try
+                    {
+                        await conn.SendAsync(opCode, message);
+                        count++;
+                    }
+                    catch { } // not really all that bothered - they just won't get counted
                 }
             }
             return count;
@@ -102,9 +107,11 @@ namespace Channels.WebSockets
                         connections.TryAdd(socket, socket);
                         WriteStatus("Processing incoming frames...");
                         await socket.ProcessIncomingFramesAsync(this);
+                        socket.Close();
                     }
                     catch (Exception ex)
                     {// meh, bye bye broken connection
+                        try { socket?.Close(ex); } catch { }
                         WriteStatus(ex.StackTrace);
                         WriteStatus(ex.GetType().Name);
                         WriteStatus(ex.Message);
@@ -121,10 +128,12 @@ namespace Channels.WebSockets
             }
         }
 
-        [Conditional("DEBUG")]
+        [Conditional("LOGGING")]
         internal static void WriteStatus(string message)
         {
+#if LOGGING
             Console.WriteLine($"[Server:{Environment.CurrentManagedThreadId}]: {message}");
+#endif
         }
 
         public class WebSocketConnection : IDisposable
@@ -228,6 +237,7 @@ namespace Channels.WebSockets
 
             public Task SendAsync(WebSocketsFrame.OpCodes opCode, ref Message message)
             {
+                CheckCanSend();
                 return SendAsyncImpl(opCode, message);
             }
             private async Task SendAsyncImpl(WebSocketsFrame.OpCodes opCode, Message message)
@@ -244,13 +254,36 @@ namespace Channels.WebSockets
                 {
                     WriteStatus($"Writing {opCode} message...");
                     await WebSocketProtocol.WriteAsync(this, opCode, ref message);
+                    if (opCode == WebSocketsFrame.OpCodes.Close) Close();
                 }
                 finally
                 {
                     writeLock.Release();
                 }
             }
-            public async Task SendAsync(WebSocketsFrame.OpCodes opCode, byte[] message)
+            public bool IsClosed => isClosed;
+            private bool isClosed;
+            internal void Close(Exception error = null)
+            {
+                isClosed = true;
+                try
+                {
+                    connection.Output.CompleteWriting(error);
+                    connection.Input.CompleteReading(error);
+                }
+                finally { }
+            }
+            private void CheckCanSend()
+            {
+                if (isClosed) throw new InvalidOperationException();
+            }
+
+            public Task SendAsync(WebSocketsFrame.OpCodes opCode, byte[] message)
+            {
+                CheckCanSend();
+                return SendAsyncImpl(opCode, message);
+            }
+            private async Task SendAsyncImpl(WebSocketsFrame.OpCodes opCode, byte[] message)
             {
                 //TODO: come up with a better way of getting ordered access to the socket
                 var writeLock = GetWriteSemaphore();
@@ -264,6 +297,7 @@ namespace Channels.WebSockets
                 {
                     WriteStatus($"Writing {opCode} message...");
                     await WebSocketProtocol.WriteAsync(this, opCode, message);
+                    if (opCode == WebSocketsFrame.OpCodes.Close) Close();
                 }
                 finally
                 {
@@ -354,28 +388,28 @@ namespace Channels.WebSockets
         }
         private Task OnFrameReceivedImplAsync(WebSocketConnection connection, WebSocketsFrame.OpCodes opCode, int mask, bool isFinal, int count, ref ReadableBuffer buffer)
         {
-            Message msg;
+            Message msg = new Message(buffer.Slice(0, count), mask, isFinal);
             switch (opCode)
             {
                 case WebSocketsFrame.OpCodes.Binary:
-                    msg = new Message(buffer.Slice(0, count), mask, isFinal);
                     return OnBinaryAsync(connection, ref msg);
                 case WebSocketsFrame.OpCodes.Text:
-                    msg = new Message(buffer.Slice(0, count), mask, isFinal);
                     return OnTextAsync(connection, ref msg);
                 case WebSocketsFrame.OpCodes.Close:
-                    return OnCloseAsync(connection);
+                    return OnCloseAsync(connection, ref msg);
                 case WebSocketsFrame.OpCodes.Ping:
-                    msg = new Message(buffer.Slice(0, count), mask, isFinal);
                     return OnPingAsync(connection, ref msg);
                 case WebSocketsFrame.OpCodes.Pong:
-                    msg = new Message(buffer.Slice(0, count), mask, isFinal);
                     return OnPongAsync(connection, ref msg);
                 default:
                     return TaskResult.True;
             }
         }
-        protected virtual Task OnCloseAsync(WebSocketConnection connection) => TaskResult.True;
+        protected virtual Task OnCloseAsync(WebSocketConnection connection, ref Message message)
+        {
+            // respond to a close in-kind (2-handed close)
+            return connection.SendAsync(WebSocketsFrame.OpCodes.Close, ref message);
+        }
         protected virtual Task OnPongAsync(WebSocketConnection connection, ref Message message) => TaskResult.True;
         protected virtual Task OnPingAsync(WebSocketConnection connection, ref Message message)
         {
@@ -454,8 +488,7 @@ namespace Channels.WebSockets
             public static readonly Task<bool>
                 True = Task.FromResult(true),
                 False = Task.FromResult(false);
-            public static readonly Task<int>
-                Zero = Task.FromResult(0);
+            public static readonly Task<int> Zero = Task.FromResult(0);
         }
 
         protected virtual Task<bool> OnAuthenticateAsync(WebSocketConnection connection) => TaskResult.True;
