@@ -412,7 +412,7 @@ namespace Channels.WebSockets
                     var connection = socket.Connection;
 
                     const int ResponseTokenLength = 28;
-                    // how do I free this? do I need to?
+
                     var buffer = connection.Output.Alloc(StandardPrefixBytes.Length +
                         ResponseTokenLength + StandardPostfixBytes.Length);
                     string hashBase64 = ComputeReply(key, buffer.Memory);
