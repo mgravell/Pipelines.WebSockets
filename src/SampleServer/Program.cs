@@ -36,7 +36,7 @@ namespace ConsoleApplication
                 bool keepGoing = true, writeLegend = true;
                 while (keepGoing)
                 {
-                    if(writeLegend)
+                    if (writeLegend)
                     {
                         Console.WriteLine("c: start client");
                         Console.WriteLine("c ###: start ### clients");
@@ -45,7 +45,10 @@ namespace ConsoleApplication
                         Console.WriteLine("p: ping");
                         Console.WriteLine("l: toggle logging");
                         Console.WriteLine("cls: clear console");
-                        Console.WriteLine("x: exit");
+                        Console.WriteLine("xc: close at client");
+                        Console.WriteLine("xs: close at server");
+                        Console.WriteLine("q: quit");
+                        Console.WriteLine($"clients: {ClientCount}; server connections: {server.ConnectionCount}");
                         writeLegend = false;
                     }
 
@@ -56,19 +59,48 @@ namespace ConsoleApplication
                         case "cls":
                             Console.Clear();
                             break;
-                        case "x":
+                        case "q":
                             keepGoing = false;
                             break;
                         case "l":
                             logging = !logging;
                             Console.WriteLine("logging is now " + (logging ? "on" : "off"));
                             break;
+                        case "xc":
+                            CloseAllClients(cancel.Token).ContinueWith(t =>
+                            {
+                                try
+                                {
+                                    Console.WriteLine($"Closed {t.Result} clients");
+                                }
+                                catch (Exception e)
+                                {
+                                    WriteError(e);
+                                }
+                            });
+                            break;
+                        case "xs":
+                            server.CloseAllAsync("nuked from orbit").ContinueWith(t =>
+                            {
+                                try
+                                {
+                                    Console.WriteLine($"Closed {t.Result} connections at the server");
+                                }
+                                catch (Exception e)
+                                {
+                                    WriteError(e);
+                                }
+                            });
+                            break;
                         case "b":
                             server.BroadcastAsync("hello to all clients").ContinueWith(t =>
                             {
-                                try {
+                                try
+                                {
                                     Console.WriteLine($"Broadcast to {t.Result} clients");
-                                } catch (Exception e) {
+                                }
+                                catch (Exception e)
+                                {
                                     WriteError(e);
                                 }
                             });
@@ -76,10 +108,12 @@ namespace ConsoleApplication
                         case "s":
                             SendFromClients(cancel.Token).ContinueWith(t =>
                             {
-                                try {
+                                try
+                                {
                                     Console.WriteLine($"Sent from {t.Result} clients");
                                 }
-                                catch (Exception e) {
+                                catch (Exception e)
+                                {
                                     WriteError(e);
                                 }
                             });
@@ -90,12 +124,15 @@ namespace ConsoleApplication
                         case "p":
                             server.PingAsync("ping!").ContinueWith(t =>
                             {
-                                try {
+                                try
+                                {
                                     Console.WriteLine($"Pinged {t.Result} clients");
-                                } catch(Exception e) {
+                                }
+                                catch (Exception e)
+                                {
                                     WriteError(e);
                                 }
-                            });                                
+                            });
                             break;
                         default:
                             var match = Regex.Match(line, "c ([0-9]+)");
@@ -125,14 +162,11 @@ namespace ConsoleApplication
             for (int i = 0; i < count; i++) Task.Run(() => Execute(true, cancel));
             // not thread-pool so probably aren't there yet
             Console.WriteLine($"{count} client(s) started; expected: {countBefore + count}");
-            Task.Delay(5000).ContinueWith(t => {
-                Console.WriteLine($"Total connected clients: {ClientCount}");
-            });
         }
 
         private static void WriteError(Exception e)
         {
-            while(e is AggregateException && e.InnerException != null)
+            while (e is AggregateException && e.InnerException != null)
             {
                 e = e.InnerException;
             }
@@ -164,7 +198,7 @@ namespace ConsoleApplication
             ClientWebSocketWithIdentity[] arr;
             lock (clients)
             {
-                arr = clients.ToArray();   
+                arr = clients.ToArray();
             }
             int count = 0;
             foreach (var client in arr)
@@ -173,6 +207,26 @@ namespace ConsoleApplication
                 try
                 {
                     await client.Socket.SendAsync(new ArraySegment<byte>(msg, 0, msg.Length), WebSocketMessageType.Text, true, cancel);
+                    count++;
+                }
+                catch { }
+            }
+            return count;
+        }
+        private static async Task<int> CloseAllClients(CancellationToken cancel)
+        {
+            ClientWebSocketWithIdentity[] arr;
+            lock (clients)
+            {
+                arr = clients.ToArray();
+            }
+            int count = 0;
+            foreach (var client in arr)
+            {
+                var msg = Encoding.UTF8.GetBytes($"Hello from client {client.Id}");
+                try
+                {
+                    await client.Socket.CloseAsync(WebSocketCloseStatus.NormalClosure, "bye", cancel);
                     count++;
                 }
                 catch { }
@@ -189,7 +243,7 @@ namespace ConsoleApplication
                 Id = id;
             }
             public override bool Equals(object obj) => obj is ClientWebSocketWithIdentity && Equals((ClientWebSocketWithIdentity)obj);
-            public bool Equals(ClientWebSocketWithIdentity obj)=> obj.Id == this.Id && obj.Socket == this.Socket;
+            public bool Equals(ClientWebSocketWithIdentity obj) => obj.Id == this.Id && obj.Socket == this.Socket;
             public override int GetHashCode() => Id;
             public override string ToString() => $"{Id}: {Socket}";
         }
@@ -203,7 +257,7 @@ namespace ConsoleApplication
                     var uri = new Uri("ws://127.0.0.1:5001");
                     WriteStatus($"connecting to {uri}...");
                     await socket.ConnectAsync(uri, token);
-                    
+
                     WriteStatus("connected");
                     int clientNumber = Interlocked.Increment(ref Program.clientNumber);
                     var named = new ClientWebSocketWithIdentity(socket, clientNumber);
@@ -258,7 +312,7 @@ namespace ConsoleApplication
                     Console.WriteLine($"client {named.Id} received {result.MessageType}: {message}");
                 }
             }
-            
+
         }
     }
 }

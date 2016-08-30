@@ -39,6 +39,13 @@ namespace Channels.WebSockets
                 Stop();
             }
         }
+        public int ConnectionCount => connections.Count;
+
+        public Task<int> CloseAllAsync(string message = null, Func<WebSocketConnection, bool> predicate = null)
+        {
+            if (connections.IsEmpty) return TaskResult.Zero; // avoid any processing
+            return BroadcastAsync(WebSocketsFrame.OpCodes.Close, message == null ? null : Encoding.UTF8.GetBytes(message), predicate);
+        }
         public Task<int> BroadcastAsync(string message, Func<WebSocketConnection, bool> predicate = null)
         {
             if (message == null) throw new ArgumentNullException(nameof(message));
@@ -236,7 +243,26 @@ namespace Channels.WebSockets
             public bool HasBacklog => false; // something like => foo.Length != 0;
             public ReadableBuffer BacklogBuffer => default(ReadableBuffer); // something like => foo
 
-            public Task SendAsync(WebSocketsFrame.OpCodes opCode, ref Message message)
+            public Task SendAsync(string message)
+            {
+                if (message == null) throw new ArgumentNullException(nameof(message));
+                return SendAsync(WebSocketsFrame.OpCodes.Text, Encoding.UTF8.GetBytes(message));
+            }
+            public Task SendAsync(byte[] message)
+            {
+                if (message == null) throw new ArgumentNullException(nameof(message));
+                return SendAsync(WebSocketsFrame.OpCodes.Binary, message);
+            }
+            public Task PingAsync(string message = null)
+            {
+                return SendAsync(WebSocketsFrame.OpCodes.Ping, message == null ? null : Encoding.UTF8.GetBytes(message));
+            }
+            public Task CloseAsync(string message = null)
+            {
+                CheckCanSend(); // seems quite likely to be in doubt here...
+                return SendAsync(WebSocketsFrame.OpCodes.Ping, message == null ? null : Encoding.UTF8.GetBytes(message));
+            }
+            internal Task SendAsync(WebSocketsFrame.OpCodes opCode, ref Message message)
             {
                 CheckCanSend();
                 return SendAsyncImpl(opCode, message);
@@ -279,7 +305,7 @@ namespace Channels.WebSockets
                 if (isClosed) throw new InvalidOperationException();
             }
 
-            public Task SendAsync(WebSocketsFrame.OpCodes opCode, byte[] message)
+            internal Task SendAsync(WebSocketsFrame.OpCodes opCode, byte[] message)
             {
                 CheckCanSend();
                 return SendAsyncImpl(opCode, message);
