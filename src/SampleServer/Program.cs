@@ -44,6 +44,7 @@ namespace ConsoleApplication
                         Console.WriteLine("s: send from clients");
                         Console.WriteLine("p: ping");
                         Console.WriteLine("l: toggle logging");
+                        Console.WriteLine("cls: clear console");
                         Console.WriteLine("x: exit");
                         writeLegend = false;
                     }
@@ -52,6 +53,9 @@ namespace ConsoleApplication
                     switch (line)
                     {
                         case null:
+                        case "cls":
+                            Console.Clear();
+                            break;
                         case "x":
                             keepGoing = false;
                             break;
@@ -120,7 +124,10 @@ namespace ConsoleApplication
             int countBefore = ClientCount;
             for (int i = 0; i < count; i++) Task.Run(() => Execute(true, cancel));
             // not thread-pool so probably aren't there yet
-            Console.WriteLine($"{count} client(s) started; total: {countBefore + count}");
+            Console.WriteLine($"{count} client(s) started; expected: {countBefore + count}");
+            Task.Delay(5000).ContinueWith(t => {
+                Console.WriteLine($"Total connected clients: {ClientCount}");
+            });
         }
 
         private static void WriteError(Exception e)
