@@ -14,7 +14,7 @@ using System.Threading.Tasks;
 
 namespace Channels.WebSockets
 {
-    public class WebSocketServer : IDisposable
+    public abstract class WebSocketServer : IDisposable
     {
         private UvTcpListener listener;
         private UvThread thread;
@@ -23,15 +23,8 @@ namespace Channels.WebSockets
         public int Port => port;
         public IPAddress IP => ip;
 
+        public bool BufferFragments { get; set; }
         public bool AllowClientsMissingConnectionHeaders { get; set; } = true; // stoopid browsers
-
-        public WebSocketServer() : this(IPAddress.Any, 80) { }
-        public WebSocketServer(IPAddress ip, int port)
-        {
-            this.ip = ip;
-            this.port = port;
-        }
-
 
         public void Dispose() => Dispose(true);
         ~WebSocketServer() { Dispose(false); }
@@ -44,7 +37,7 @@ namespace Channels.WebSockets
             }            
         }
 
-        public void Start()
+        public void Start(IPAddress ip, int port)
         {
             if (listener == null)
             {
@@ -111,87 +104,205 @@ namespace Channels.WebSockets
 
             internal async Task ProcessIncomingFramesAsync(WebSocketServer server)
             {
-                ReadableBuffer buffer;
-                bool keepReading;
                 do
                 {
-                    buffer = await connection.Input;
-                    keepReading = TryReadFrame(server, ref buffer);
-                    buffer.Consumed(buffer.Start);
-                }
-                while (keepReading);
-            }
+                    ReadableBuffer buffer = await connection.Input;
+                    try
+                    {
+                        if (buffer.IsEmpty && connection.Input.Completion.IsCompleted)
+                        {
+                            break; // that's all, folks
+                        }
+                        WebSocketsFrame frame;
+                        if (WebSocketProtocol.TryReadFrame(ref buffer, out frame))
+                        {
+                            int payloadLength = frame.PayloadLength;
+                            // buffer now points to the payload 
+                            if (!frame.IsMasked)
+                            {
+                                throw new InvalidOperationException("Client-to-server frames should be masked");
+                            }
+                            if (frame.IsControlFrame && !frame.IsFinal)
+                            {
+                                throw new InvalidOperationException("Control frames cannot be fragmented");
+                            }
+                            
+                            await server.OnFrameReceivedAsync(this, ref frame, ref buffer);
+                            // and finally, progress past the frame
+                            if (payloadLength != 0) buffer = buffer.Slice(payloadLength);
+                        }
 
-            private bool TryReadFrame(WebSocketServer server, ref ReadableBuffer buffer)
+                    }
+                    finally
+                    {
+                        buffer.Consumed(buffer.Start);
+                    }                    
+                }
+                while (true);
+            }
+            WebSocketsFrame.OpCodes lastOpCode;
+            internal WebSocketsFrame.OpCodes GetEffectiveOpCode(ref WebSocketsFrame frame)
             {
-                if (buffer.IsEmpty && connection.Input.Completion.IsCompleted)
+                if (frame.IsControlFrame)
                 {
-                    return false; // that's all, folks
+                    // doesn't change state
+                    return frame.OpCode;
                 }
 
-                WebSocketsFrame frame;
+                var frameOpCode = frame.OpCode;
 
-                if (WebSocketProtocol.TryReadFrame(ref buffer, out frame))
-                {
-                    int payloadLength = frame.PayloadLength;
-                    // buffer now points to the payload 
-                    if (!frame.IsMasked)
-                    {
-                        throw new InvalidOperationException("Client-to-server frames should be masked");
-                    }
-                    if (frame.IsControlFrame && !frame.IsFinal)
-                    {
-                        throw new InvalidOperationException("Control frames cannot be fragmented");
-                    }
-                    server.OnFrameReceived(this, ref frame, ref buffer);
-                    // and finally, progress past the frame
-                    if (payloadLength != 0) buffer = buffer.Slice(payloadLength);
-                }
-                return true; // keep reading
+                // re-use the previous opcode if we are a continuation
+                var result = frameOpCode == WebSocketsFrame.OpCodes.Continuation ? lastOpCode : frameOpCode;
+
+                // if final, clear the opcode; otherwise: use what we thought of
+                lastOpCode = frame.IsFinal ? WebSocketsFrame.OpCodes.Continuation : result;
+                return result;
             }
+
+
+            // TODO: not sure how to do this; basically I want to lease a writable, expandable area
+            // for a duration, and be able to access it for reading, and release
+            internal void AddBacklog(ref ReadableBuffer buffer, ref WebSocketsFrame frame)
+            {
+                // unscramble the data
+                if (frame.Mask != 0)
+                {
+                    var tmp = buffer.Slice(0, frame.PayloadLength);
+                    WebSocketsFrame.ApplyMask(ref tmp, frame.Mask);
+                }
+
+                // something like:
+                // foo.Ensure(payloadLength)
+                // foo.Write(ref buffer, payloadLength);
+                throw new NotImplementedException(nameof(AddBacklog));
+            }
+            internal void ClearBacklog()
+            {
+                // something like
+                // var tmp = foo;
+                // foo = default(Whatever);
+                // foo.Dispose(); // basically, release the lease
+            }
+            public bool HasBacklog => false; // something like => foo.Length != 0;
+            public ReadableBuffer BacklogBuffer => default(ReadableBuffer); // something like => foo
         }
 
-        protected void OnFrameReceived(WebSocketConnection connection, ref WebSocketsFrame frame, ref ReadableBuffer buffer)
+        private Task OnFrameReceivedAsync(WebSocketConnection connection, ref WebSocketsFrame frame, ref ReadableBuffer buffer)
         {
             WriteStatus(frame.ToString());
-            switch (frame.OpCode)
+            
+
+            // note that this call updates the connection state; must be called, even
+            // if we don't get as far as the 'switch' 
+            var opCode = connection.GetEffectiveOpCode(ref frame);
+
+
+            if (!frame.IsControlFrame)
+            {
+                if (frame.IsFinal)
+                {
+                    if (connection.HasBacklog)
+                    {
+                        
+                        try
+                        {
+                            // add our data to the existing backlog
+                            connection.AddBacklog(ref buffer, ref frame);
+
+                            var backlog = connection.BacklogBuffer;
+                            // use the backlog buffer to execute the method
+                            OnFrameReceivedImplAsync(connection, opCode, 0, true, backlog.Length, ref backlog);
+                        }
+                        finally
+                        {
+                            // and release the backlog
+                            connection.ClearBacklog();
+                        }
+                    }
+                }
+                else if (BufferFragments)
+                {
+                    // need to buffer this data against the connection
+                    connection.AddBacklog(ref buffer, ref frame);
+                    return TaskResult.True;
+                }
+            }
+
+            return OnFrameReceivedImplAsync(connection, opCode, frame.Mask, frame.IsFinal, frame.PayloadLength, ref buffer);
+        }
+        private Task OnFrameReceivedImplAsync(WebSocketConnection connection, WebSocketsFrame.OpCodes opCode, int mask, bool isFinal, int count, ref ReadableBuffer buffer)
+        {
+            Message msg;
+            switch (opCode)
             {
                 case WebSocketsFrame.OpCodes.Binary:
-                    OnBinary(connection, ref frame, ref buffer);
-                    break;
-                case WebSocketsFrame.OpCodes.Close:
-                    OnClose(connection, ref frame);
-                    break;
-                case WebSocketsFrame.OpCodes.Continuation:
-                    OnContinuation(connection, ref frame, ref buffer);
-                    break;
-                case WebSocketsFrame.OpCodes.Ping:
-                    OnPing(connection, ref frame);
-                    break;
-                case WebSocketsFrame.OpCodes.Pong:
-                    OnPong(connection, ref frame);
-                    break;
+                    msg = new Message(buffer.Slice(0, count), mask, isFinal);
+                    return OnBinaryAsync(connection, ref msg);
                 case WebSocketsFrame.OpCodes.Text:
-                    OnText(connection, ref frame, ref buffer);
-                    break;
+                    msg = new Message(buffer.Slice(0, count), mask, isFinal);
+                    return OnTextAsync(connection, ref msg);
+                case WebSocketsFrame.OpCodes.Close:
+                    return OnCloseAsync(connection);
+                case WebSocketsFrame.OpCodes.Ping:
+                    msg = new Message(buffer.Slice(0, count), mask, isFinal);
+                    return OnPingAsync(connection, ref msg);
+                case WebSocketsFrame.OpCodes.Pong:
+                    msg = new Message(buffer.Slice(0, count), mask, isFinal);
+                    return OnPongAsync(connection, ref msg);
+                default:
+                    return TaskResult.True;
             }
         }
+        protected virtual Task OnCloseAsync(WebSocketConnection connection) => TaskResult.True;
+        protected virtual Task OnPongAsync(WebSocketConnection connection, ref Message message) => TaskResult.True;
+        protected virtual Task OnPingAsync(WebSocketConnection connection, ref Message message) => TaskResult.True;        
+        protected virtual Task OnBinaryAsync(WebSocketConnection connection, ref Message message) => TaskResult.True;
+        protected virtual Task OnTextAsync(WebSocketConnection connection, ref Message message) => TaskResult.True;
 
-        protected virtual void OnPong(WebSocketConnection connection, ref WebSocketsFrame frame) { }
-        protected virtual void OnPing(WebSocketConnection connection, ref WebSocketsFrame frame) { }
-        protected virtual void OnClose(WebSocketConnection connection, ref WebSocketsFrame frame) { }
-        protected virtual void OnContinuation(WebSocketConnection connection, ref WebSocketsFrame frame, ref ReadableBuffer buffer) { }
-        protected virtual void OnBinary(WebSocketConnection connection, ref WebSocketsFrame frame, ref ReadableBuffer buffer) { }
-        protected virtual void OnText(WebSocketConnection connection, ref WebSocketsFrame frame, ref ReadableBuffer buffer)
+        public struct Message
         {
-            var handler = Text;
-            if (handler != null)
+            private ReadableBuffer buffer;
+            private int mask;
+            private string text;
+            public bool IsFinal { get; }
+            internal Message(ReadableBuffer buffer, int mask, bool isFinal)
             {
-                frame.ApplyMask(ref buffer);
-                handler(connection, buffer.GetUtf8String());
+                this.buffer = buffer;
+                this.mask = mask;
+                text = null;
+                IsFinal = isFinal;
             }
+            private void ApplyMask()
+            {
+                if (mask != 0)
+                {
+                    WebSocketsFrame.ApplyMask(ref buffer, mask);
+                    mask = 0;
+                }
+            }
+            public override string ToString() => GetText();
+            public string GetText()
+            {
+                if (text != null) return text;
+
+                int len = LengthBytes;
+                if (len == 0) return text = "";
+
+                ApplyMask();
+                return text = buffer.GetUtf8String();
+            }
+            public byte[] GetBytes()
+            {
+                int len = LengthBytes;
+                if (len == 0) return NilBytes;
+
+                ApplyMask();
+                return buffer.ToArray();                
+            }
+            public int LengthBytes => buffer.Length;
         }
-        public event Action<WebSocketConnection, string> Text;
+        private static readonly byte[] NilBytes = new byte[0];
+
 
 
         static readonly char[] Comma = { ',' };
@@ -305,9 +416,7 @@ namespace Channels.WebSockets
         {
             public override string ToString()
             {
-                return OpCode.ToString() + ": " + PayloadLength.ToString()
-                    + " bytes (" + Flags.ToString() + ", mask=" + Mask.ToString()
-                    + ")";
+                return OpCode.ToString() + ": " + PayloadLength.ToString() + " bytes (" + Flags.ToString() + ")";
             }
             private readonly byte header;
             private readonly byte header2;
@@ -336,17 +445,16 @@ namespace Channels.WebSockets
                 this.header = header;
                 header2 = (byte)(isMasked ? 1 : 0);
                 PayloadLength = payloadLength;
-                Mask = mask;
+                Mask = isMasked ? mask : 0;
             }
             public bool IsMasked => (header2 & 1) != 0;
             private bool HasFlag(FrameFlags flag) => (header & (byte)flag) != 0;
 
-            internal unsafe void ApplyMask(ref ReadableBuffer buffer)
+            internal unsafe static void ApplyMask(ref ReadableBuffer buffer, int mask)
             {
-                if (!IsMasked) return;
-                ulong mask = (uint)Mask;
                 if (mask == 0) return;
-                mask = (mask << 32) | mask;
+                ulong mask8 = (uint)mask;
+                mask8 = (mask8 << 32) | mask8;
 
                 foreach (var span in buffer)
                 {
@@ -357,7 +465,7 @@ namespace Channels.WebSockets
                         var ptr = (ulong*)span.BufferPtr;
                         do
                         {
-                            (*ptr++) ^= mask;
+                            (*ptr++) ^= mask8;
                             len -= 8;
                         } while ((len & ~7) != 0); // >= 8
                     }
@@ -367,10 +475,10 @@ namespace Channels.WebSockets
                         var ptr = ((byte*)span.BufferPtr) + (buffer.Length & ~7); // forwards everything except the last chunk
                         do
                         {
-                            var b = (byte)(mask & 255);
+                            var b = (byte)(mask8 & 255);
                             (*ptr++) ^= b;
                             // rotate the mask (need to preserve LHS in case we have another span)
-                            mask = (mask >> 8) | (((ulong)b) << 56);
+                            mask8 = (mask8 >> 8) | (((ulong)b) << 56);
                             len--;
                         } while (len != 0);
                     }

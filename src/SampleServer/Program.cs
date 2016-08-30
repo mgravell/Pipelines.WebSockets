@@ -10,15 +10,19 @@ namespace ConsoleApplication
 {
     public class Program
     {
+        class MyServer : WebSocketServer
+        {
+            protected override Task OnTextAsync(WebSocketConnection connection, ref Message message)
+            {
+                Console.WriteLine($"Received: {message.GetText()} (final: {message.IsFinal})");
+                return base.OnTextAsync(connection, ref message);
+            }
+        }
         public static void Main()
         {
-            using (var server = new WebSocketServer(IPAddress.Loopback, 5001))
+            using (var server = new MyServer())
             {
-                server.Text += (conn, msg) =>
-                {
-                    Console.WriteLine($"Received: {msg}");
-                };
-                server.Start();
+                server.Start(IPAddress.Loopback, 5001);
                 Console.WriteLine($"Running on {server.IP}:{server.Port}... press any key to test");
                 Console.ReadKey();
                 CancellationTokenSource cancel = new CancellationTokenSource();
