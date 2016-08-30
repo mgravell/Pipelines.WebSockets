@@ -165,9 +165,10 @@ namespace Channels.WebSockets
                 this.totalBytes = count == 0 ? 0 : -1;
                 if (preComputeLength) GetTotalBytes();
             }
-
+#if ENCODING_POINTER_API
             // avoid allocating Encoder instances all the time
             static object sharedEncoder;
+#endif
             unsafe void IMessageWriter.Write(ref WritableBuffer buffer)
             {
                 int expected = GetTotalBytes();
@@ -179,7 +180,7 @@ namespace Channels.WebSockets
                 int actual;
                 fixed (char* chars = value)
                 {
-#if ENCODING_POINTER_API          
+#if ENCODING_POINTER_API
                     var enc = (Encoder)Interlocked.Exchange(ref sharedEncoder, null);
                     if (enc == null) enc = Encoding.UTF8.GetEncoder(); // need a new one      
                     actual = enc.GetBytes(chars + offset, count, dest, expected, true);
