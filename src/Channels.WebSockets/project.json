@@ -15,7 +15,7 @@
   },
 
   "frameworks": {
-    "net451": {},
+    "net451": { "buildOptions": { "define": [ "VOLATILE_READ" ] } },
     "netstandard1.3": {
       "dependencies": {
         "System.Threading.Overlapped": "4.0.1"

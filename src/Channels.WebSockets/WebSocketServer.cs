@@ -1,6 +1,7 @@
 ﻿using Channels.Networking.Libuv;
 using System;
 using System.Collections;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
@@ -10,6 +11,7 @@ using System.Numerics;
 using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace Channels.WebSockets
@@ -34,8 +36,41 @@ namespace Channels.WebSockets
             {
                 GC.SuppressFinalize(this);
                 Stop();
-            }            
+            }
         }
+        public Task<int> BroadcastAsync(string message, Func<WebSocketConnection, bool> predicate = null)
+        {
+            if (message == null) throw new ArgumentNullException(nameof(message));
+            if (connections.IsEmpty) return TaskResult.Zero; // avoid any processing
+            return BroadcastAsync(WebSocketsFrame.OpCodes.Text, Encoding.UTF8.GetBytes(message), predicate);
+        }
+        public Task<int> BroadcastAsync(byte[] message, Func<WebSocketConnection, bool> predicate = null)
+        {
+            if (message == null) throw new ArgumentNullException(nameof(message));
+            if (connections.IsEmpty) return TaskResult.Zero; // avoid any processing
+            return BroadcastAsync(WebSocketsFrame.OpCodes.Binary, message, predicate);
+        }
+        public Task<int> PingAsync(string message = null, Func<WebSocketConnection, bool> predicate = null)
+        {
+            if (connections.IsEmpty) return TaskResult.Zero; // avoid any processing
+            return BroadcastAsync(WebSocketsFrame.OpCodes.Ping, message == null ? null : Encoding.UTF8.GetBytes(message), predicate);
+        }
+
+        private async Task<int> BroadcastAsync(WebSocketsFrame.OpCodes opCode, byte[] message, Func<WebSocketConnection, bool> predicate)
+        {
+            int count = 0;
+            foreach (var pair in connections)
+            {
+                if (predicate == null || predicate(pair.Key))
+                {
+                    await pair.Key.SendAsync(opCode, message);
+                    count++;
+                }
+            }
+            return count;
+        }
+        // todo: pick a more appropriate container for connection management; this insane choice is just arbitrary
+        private ConcurrentDictionary<WebSocketConnection, WebSocketConnection> connections = new ConcurrentDictionary<WebSocketConnection, WebSocketConnection>();
 
         public void Start(IPAddress ip, int port)
         {
@@ -45,10 +80,11 @@ namespace Channels.WebSockets
                 listener = new UvTcpListener(thread, new IPEndPoint(ip, port));
                 listener.OnConnection(async connection =>
                 {
+                    WebSocketConnection socket = null;
                     try
                     {
                         WriteStatus("Connected");
-                        WebSocketConnection socket;
+
                         WriteStatus("Parsing http request...");
                         using (var request = await ParseHttpRequest(connection.Input))
                         {
@@ -62,6 +98,8 @@ namespace Channels.WebSockets
                         }
                         WriteStatus("Handshake complete hook...");
                         await OnHandshakeCompleteAsync(socket);
+
+                        connections.TryAdd(socket, socket);
                         WriteStatus("Processing incoming frames...");
                         await socket.ProcessIncomingFramesAsync(this);
                     }
@@ -73,6 +111,8 @@ namespace Channels.WebSockets
                     }
                     finally
                     {
+                        WebSocketConnection tmp;
+                        if (socket != null) connections.TryRemove(socket, out tmp);
                         try { connection.Output.CompleteWriting(); } catch { }
                         try { connection.Input.CompleteReading(); } catch { }
                     }
@@ -87,7 +127,7 @@ namespace Channels.WebSockets
             Console.WriteLine($"[Server:{Environment.CurrentManagedThreadId}]: {message}");
         }
 
-        public class WebSocketConnection
+        public class WebSocketConnection : IDisposable
         {
             private UvTcpServerConnection connection;
             internal UvTcpServerConnection Connection => connection;
@@ -114,7 +154,7 @@ namespace Channels.WebSockets
                             break; // that's all, folks
                         }
                         WebSocketsFrame frame;
-                        if (WebSocketProtocol.TryReadFrame(ref buffer, out frame))
+                        if (WebSocketProtocol.TryReadFrameHeader(ref buffer, out frame))
                         {
                             int payloadLength = frame.PayloadLength;
                             // buffer now points to the payload 
@@ -126,7 +166,7 @@ namespace Channels.WebSockets
                             {
                                 throw new InvalidOperationException("Control frames cannot be fragmented");
                             }
-                            
+
                             await server.OnFrameReceivedAsync(this, ref frame, ref buffer);
                             // and finally, progress past the frame
                             if (payloadLength != 0) buffer = buffer.Slice(payloadLength);
@@ -136,7 +176,7 @@ namespace Channels.WebSockets
                     finally
                     {
                         buffer.Consumed(buffer.Start);
-                    }                    
+                    }
                 }
                 while (true);
             }
@@ -185,12 +225,94 @@ namespace Channels.WebSockets
             }
             public bool HasBacklog => false; // something like => foo.Length != 0;
             public ReadableBuffer BacklogBuffer => default(ReadableBuffer); // something like => foo
+
+            public Task SendAsync(WebSocketsFrame.OpCodes opCode, ref Message message)
+            {
+                return SendAsyncImpl(opCode, message);
+            }
+            private async Task SendAsyncImpl(WebSocketsFrame.OpCodes opCode, Message message)
+            {
+                //TODO: come up with a better way of getting ordered access to the socket
+                var writeLock = GetWriteSemaphore();
+                bool haveLock = writeLock.Wait(0);
+
+                if (!haveLock)
+                {   // try to acquire asynchronously instead, then
+                    await writeLock.WaitAsync();
+                }
+                try
+                {
+                    WriteStatus($"Writing {opCode} message...");
+                    await WebSocketProtocol.WriteAsync(this, opCode, ref message);
+                }
+                finally
+                {
+                    writeLock.Release();
+                }
+            }
+            public async Task SendAsync(WebSocketsFrame.OpCodes opCode, byte[] message)
+            {
+                //TODO: come up with a better way of getting ordered access to the socket
+                var writeLock = GetWriteSemaphore();
+                bool haveLock = writeLock.Wait(0);
+
+                if (!haveLock)
+                {   // try to acquire asynchronously instead, then
+                    await writeLock.WaitAsync();
+                }
+                try
+                {
+                    WriteStatus($"Writing {opCode} message...");
+                    await WebSocketProtocol.WriteAsync(this, opCode, message);
+                }
+                finally
+                {
+                    writeLock.Release();
+                }
+            }
+            private SemaphoreSlim GetWriteSemaphore()
+            {
+                var tmp = writeLock;
+                if (tmp != null) return (SemaphoreSlim)tmp; // simple path
+
+                IDisposable newSemaphore = null;
+                try
+                {
+#if VOLATILE_READ
+                    while ((tmp = Thread.VolatileRead(ref writeLock)) == null)
+#else
+                    while ((tmp = Interlocked.CompareExchange(ref writeLock, null, null)) == null)
+#endif
+                    {
+                        if (newSemaphore == null) newSemaphore = new SemaphoreSlim(1, 1);
+                        if (Interlocked.CompareExchange(ref writeLock, newSemaphore, null) == null)
+                        {
+                            tmp = newSemaphore; // success, we swapped it in
+                            newSemaphore = null; // to avoid it being disposed
+                            break; // no need to read again
+                        }
+                    }
+                }
+                finally
+                {
+                    newSemaphore?.Dispose();
+                }
+                return (SemaphoreSlim)tmp;
+            }
+            // lazily instantiated SemaphoreSlim
+            object writeLock;
+
+            public void Dispose()
+            {
+                ((IDisposable)writeLock)?.Dispose();
+            }
         }
+
 
         private Task OnFrameReceivedAsync(WebSocketConnection connection, ref WebSocketsFrame frame, ref ReadableBuffer buffer)
         {
             WriteStatus(frame.ToString());
-            
+
 
             // note that this call updates the connection state; must be called, even
             // if we don't get as far as the 'switch' 
@@ -203,7 +325,7 @@ namespace Channels.WebSockets
                 {
                     if (connection.HasBacklog)
                     {
-                        
+
                         try
                         {
                             // add our data to the existing backlog
@@ -255,7 +377,11 @@ namespace Channels.WebSockets
         }
         protected virtual Task OnCloseAsync(WebSocketConnection connection) => TaskResult.True;
         protected virtual Task OnPongAsync(WebSocketConnection connection, ref Message message) => TaskResult.True;
-        protected virtual Task OnPingAsync(WebSocketConnection connection, ref Message message) => TaskResult.True;        
+        protected virtual Task OnPingAsync(WebSocketConnection connection, ref Message message)
+        {
+            // by default, respond to a ping with a matching pong
+            return connection.SendAsync(WebSocketsFrame.OpCodes.Pong, ref message); // right back at you
+        }
         protected virtual Task OnBinaryAsync(WebSocketConnection connection, ref Message message) => TaskResult.True;
         protected virtual Task OnTextAsync(WebSocketConnection connection, ref Message message) => TaskResult.True;
 
@@ -285,7 +411,7 @@ namespace Channels.WebSockets
             {
                 if (text != null) return text;
 
-                int len = LengthBytes;
+                int len = TotalBytes;
                 if (len == 0) return text = "";
 
                 ApplyMask();
@@ -293,13 +419,30 @@ namespace Channels.WebSockets
             }
             public byte[] GetBytes()
             {
-                int len = LengthBytes;
+                int len = TotalBytes;
                 if (len == 0) return NilBytes;
 
                 ApplyMask();
-                return buffer.ToArray();                
+                return buffer.ToArray();
             }
-            public int LengthBytes => buffer.Length;
+            public int TotalBytes => buffer.Length;
+
+            internal void Write(ref WritableBuffer destination)
+            {
+                ApplyMask();
+                if(buffer.IsSingleSpan)
+                {
+                    var span = buffer.FirstSpan;
+                    destination.Write(span.Array, span.Offset, span.Length);
+                }
+                else
+                {
+                    foreach(var span in buffer)
+                    {
+                        destination.Write(span.Array, span.Offset, span.Length);
+                    }
+                }
+            }
         }
         private static readonly byte[] NilBytes = new byte[0];
 
@@ -311,6 +454,8 @@ namespace Channels.WebSockets
             public static readonly Task<bool>
                 True = Task.FromResult(true),
                 False = Task.FromResult(false);
+            public static readonly Task<int>
+                Zero = Task.FromResult(0);
         }
 
         protected virtual Task<bool> OnAuthenticateAsync(WebSocketConnection connection) => TaskResult.True;
@@ -496,7 +641,7 @@ namespace Channels.WebSockets
             public bool Reserved3 { get { return HasFlag(FrameFlags.Reserved3); } }
 
             public int PayloadLength { get; }
-
+            internal const int MaxHeaderLength = 14;
         }
         internal abstract class WebSocketProtocol
         {
@@ -604,7 +749,50 @@ namespace Channels.WebSockets
                 {
                     return (buffer[offset]) | (buffer[offset + 1] << 8) | (buffer[offset + 2] << 16) | (buffer[offset + 3] << 24);
                 }
-                internal unsafe override bool TryReadFrame(ref ReadableBuffer buffer, out WebSocketsFrame frame)
+
+
+                internal static unsafe void WriteFrameHeader(ref WritableBuffer output, WebSocketsFrame.FrameFlags flags, WebSocketsFrame.OpCodes opCode, int payloadLength, int mask)
+                {
+                    byte* buffer = (byte*)output.Memory.BufferPtr;
+
+                    int bytesWritten;
+                    *buffer++ = (byte)(((int)flags & 240) | ((int)opCode & 15));
+                    if (payloadLength > ushort.MaxValue)
+                    { // write as a 64-bit length
+                        *buffer++ = (byte)((mask != 0 ? 128 : 0) | 127);
+                        *buffer++ = 0;
+                        *buffer++ = 0;
+                        *buffer++ = 0;
+                        *buffer++ = 0;
+                        *buffer++ = (byte)(payloadLength >> 24);
+                        *buffer++ = (byte)(payloadLength >> 16);
+                        *buffer++ = (byte)(payloadLength >> 8);
+                        *buffer++ = (byte)(payloadLength);
+                        bytesWritten = 10;
+                    }
+                    else if (payloadLength > 125)
+                    { // write as a 16-bit length
+                        *buffer++ = (byte)((mask != 0 ? 128 : 0) | 126);
+                        *buffer++ = (byte)(payloadLength >> 8);
+                        *buffer++ = (byte)(payloadLength);
+                        bytesWritten = 4;
+                    }
+                    else
+                    { // write in the header
+                        *buffer++ = (byte)((mask != 0 ? 128 : 0) | payloadLength);
+                        bytesWritten = 2;
+                    }
+                    if (mask != 0)
+                    {
+                        *buffer++ = (byte)(mask >> 24);
+                        *buffer++ = (byte)(mask >> 16);
+                        *buffer++ = (byte)(mask >> 8);
+                        *buffer++ = (byte)(mask);
+                        bytesWritten += 4;
+                    }
+                    output.CommitBytes(bytesWritten);
+                }
+                internal unsafe override bool TryReadFrameHeader(ref ReadableBuffer buffer, out WebSocketsFrame frame)
                 {
                     frame = default(WebSocketsFrame);
                     int payloadLength, bytesAvailable = buffer.Length;
@@ -677,6 +865,22 @@ namespace Channels.WebSockets
                         return copied;
                     }
                 }
+                internal override Task WriteAsync(WebSocketConnection connection, WebSocketsFrame.OpCodes opCode, byte[] message)
+                {
+                    int payloadLength = message?.Length ?? 0;
+                    var buffer = connection.Connection.Output.Alloc(WebSocketsFrame.MaxHeaderLength + payloadLength);
+                    WriteFrameHeader(ref buffer, WebSocketsFrame.FrameFlags.IsFinal, opCode, payloadLength, 0);
+                    if(payloadLength != 0) buffer.Write(message, 0, payloadLength);
+                    return buffer.FlushAsync();
+                }
+                internal override Task WriteAsync(WebSocketConnection connection, WebSocketsFrame.OpCodes opCode, ref Message message)
+                {
+                    int payloadLength = message.TotalBytes;
+                    var buffer = connection.Connection.Output.Alloc(WebSocketsFrame.MaxHeaderLength + payloadLength);
+                    WriteFrameHeader(ref buffer, WebSocketsFrame.FrameFlags.IsFinal, opCode, payloadLength, 0);
+                    if (payloadLength != 0) message.Write(ref buffer);
+                    return buffer.FlushAsync();
+                }
             }
             [MethodImpl(MethodImplOptions.AggressiveInlining)]
             static unsafe void Copy(byte* source, byte* destination, uint bytes)
@@ -704,7 +908,15 @@ namespace Channels.WebSockets
                 {
                     throw new NotImplementedException();
                 }
-                internal override bool TryReadFrame(ref ReadableBuffer buffer, out WebSocketsFrame frame)
+                internal override bool TryReadFrameHeader(ref ReadableBuffer buffer, out WebSocketsFrame frame)
+                {
+                    throw new NotImplementedException();
+                }
+                internal override Task WriteAsync(WebSocketConnection connection, WebSocketsFrame.OpCodes opCode, byte[] message)
+                {
+                    throw new NotImplementedException();
+                }
+                internal override Task WriteAsync(WebSocketConnection connection, WebSocketsFrame.OpCodes opCode, ref Message message)
                 {
                     throw new NotImplementedException();
                 }
@@ -712,7 +924,10 @@ namespace Channels.WebSockets
 
             internal abstract Task CompleteHandshakeAsync(HttpRequest request, WebSocketConnection socket);
 
-            internal abstract bool TryReadFrame(ref ReadableBuffer buffer, out WebSocketsFrame frame);
+            internal abstract bool TryReadFrameHeader(ref ReadableBuffer buffer, out WebSocketsFrame frame);
+
+            internal abstract Task WriteAsync(WebSocketConnection connection, WebSocketsFrame.OpCodes opCode, byte[] message);
+            internal abstract Task WriteAsync(WebSocketConnection connection, WebSocketsFrame.OpCodes opCode, ref Message message);
         }
 
         internal struct HttpRequest : IDisposable
