@@ -193,6 +193,7 @@ namespace ConsoleApplication
                 lock (clients) { return clients.Count; }
             }
         }
+        private static readonly Encoding encoding = Encoding.UTF8;
         private static async Task<int> SendFromClients(CancellationToken cancel)
         {
             ClientWebSocketWithIdentity[] arr;
@@ -203,7 +204,7 @@ namespace ConsoleApplication
             int count = 0;
             foreach (var client in arr)
             {
-                var msg = Encoding.UTF8.GetBytes($"Hello from client {client.Id}");
+                var msg = encoding.GetBytes($"Hello from client {client.Id}");
                 try
                 {
                     await client.Socket.SendAsync(new ArraySegment<byte>(msg, 0, msg.Length), WebSocketMessageType.Text, true, cancel);
@@ -223,7 +224,7 @@ namespace ConsoleApplication
             int count = 0;
             foreach (var client in arr)
             {
-                var msg = Encoding.UTF8.GetBytes($"Hello from client {client.Id}");
+                var msg = encoding.GetBytes($"Hello from client {client.Id}");
                 try
                 {
                     await client.Socket.CloseAsync(WebSocketCloseStatus.NormalClosure, "bye", cancel);
@@ -308,7 +309,7 @@ namespace ConsoleApplication
                 var result = await socket.ReceiveAsync(new ArraySegment<byte>(buffer, 0, buffer.Length), token);
                 if (logging)
                 {
-                    var message = Encoding.UTF8.GetString(buffer, 0, result.Count);
+                    var message = encoding.GetString(buffer, 0, result.Count);
                     Console.WriteLine($"client {named.Id} received {result.MessageType}: {message}");
                 }
             }

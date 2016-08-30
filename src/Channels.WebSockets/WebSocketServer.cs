@@ -167,7 +167,7 @@ namespace Channels.WebSockets
             }
 #if ENCODING_POINTER_API
             // avoid allocating Encoder instances all the time
-            static object sharedEncoder;
+            static Encoder sharedEncoder;
 #endif
             unsafe void IMessageWriter.Write(ref WritableBuffer buffer)
             {
@@ -181,12 +181,12 @@ namespace Channels.WebSockets
                 fixed (char* chars = value)
                 {
 #if ENCODING_POINTER_API
-                    var enc = (Encoder)Interlocked.Exchange(ref sharedEncoder, null);
-                    if (enc == null) enc = Encoding.UTF8.GetEncoder(); // need a new one      
+                    var enc = Interlocked.Exchange(ref sharedEncoder, null);
+                    if (enc == null) enc = encoding.GetEncoder(); // need a new one      
                     actual = enc.GetBytes(chars + offset, count, dest, expected, true);
                     Interlocked.CompareExchange(ref sharedEncoder, enc, null); // make the encoder available  for re-use
 #else
-                    actual = Encoding.UTF8.GetBytes(chars + offset, count, dest, expected);
+                    actual = encoding.GetBytes(chars + offset, count, dest, expected);
 #endif
                 }
                 if (actual != expected)
@@ -203,9 +203,10 @@ namespace Channels.WebSockets
                 if (totalBytes >= 0) return totalBytes;
                 fixed (char* chars = value)
                 {
-                    return totalBytes = Encoding.UTF8.GetByteCount(chars + offset, count);
+                    return totalBytes = encoding.GetByteCount(chars + offset, count);
                 }
             }
+            static readonly Encoding encoding = Encoding.UTF8;
         }
 
         static class MessageWriter
@@ -234,8 +235,6 @@ namespace Channels.WebSockets
                 this.count = count;
             }
 
-            // avoid allocating Encoder instances all the time
-            static object sharedEncoder;
             unsafe void IMessageWriter.Write(ref WritableBuffer buffer)
             {
                 if (count != 0) buffer.Write(value, offset, count);
