@@ -44,13 +44,18 @@ namespace Channels.WebSockets
         public Task<int> CloseAllAsync(string message = null, Func<WebSocketConnection, bool> predicate = null)
         {
             if (connections.IsEmpty) return TaskResult.Zero; // avoid any processing
-            return BroadcastAsync(WebSocketsFrame.OpCodes.Close, MessageWriter.Create(message), predicate);
+            return BroadcastAsync(WebSocketsFrame.OpCodes.Close, MessageWriter.Create(message, true), predicate);
         }
         public Task<int> BroadcastAsync(string message, Func<WebSocketConnection, bool> predicate = null)
         {
             if (message == null) throw new ArgumentNullException(nameof(message));
             if (connections.IsEmpty) return TaskResult.Zero; // avoid any processing
-            return BroadcastAsync(WebSocketsFrame.OpCodes.Text, MessageWriter.Create(message), predicate);
+            return BroadcastAsync(WebSocketsFrame.OpCodes.Text, MessageWriter.Create(message, true), predicate);
+        }
+        public Task<int> PingAsync(string message = null, Func<WebSocketConnection, bool> predicate = null)
+        {
+            if (connections.IsEmpty) return TaskResult.Zero; // avoid any processing
+            return BroadcastAsync(WebSocketsFrame.OpCodes.Ping, MessageWriter.Create(message, true), predicate);
         }
         public Task<int> BroadcastAsync(byte[] message, Func<WebSocketConnection, bool> predicate = null)
         {
@@ -58,12 +63,6 @@ namespace Channels.WebSockets
             if (connections.IsEmpty) return TaskResult.Zero; // avoid any processing
             return BroadcastAsync(WebSocketsFrame.OpCodes.Binary, MessageWriter.Create(message), predicate);
         }
-        public Task<int> PingAsync(string message = null, Func<WebSocketConnection, bool> predicate = null)
-        {
-            if (connections.IsEmpty) return TaskResult.Zero; // avoid any processing
-            return BroadcastAsync(WebSocketsFrame.OpCodes.Ping, MessageWriter.Create(message), predicate);
-        }
-
         private async Task<int> BroadcastAsync<T>(WebSocketsFrame.OpCodes opCode, T message, Func<WebSocketConnection, bool> predicate) where T : struct, IMessageWriter
         {
             int count = 0;
@@ -154,7 +153,7 @@ namespace Channels.WebSockets
         {
             private string value;
             public int offset, count, totalBytes;
-            public StringMessageWriter(string value, int offset, int count)
+            public StringMessageWriter(string value, int offset, int count, bool preComputeLength)
             {
                 if (offset < 0) throw new ArgumentOutOfRangeException(nameof(offset));
                 if (count < 0) throw new ArgumentOutOfRangeException(nameof(count));
@@ -164,6 +163,7 @@ namespace Channels.WebSockets
                 this.offset = offset;
                 this.count = count;
                 this.totalBytes = count == 0 ? 0 : -1;
+                if (preComputeLength) GetTotalBytes();
             }
 
             // avoid allocating Encoder instances all the time
@@ -213,9 +213,9 @@ namespace Channels.WebSockets
             {
                 return (message == null || message.Length == 0) ? default(ByteArrayMessageWriter) : new ByteArrayMessageWriter(message, 0, message.Length);
             }
-            internal static StringMessageWriter Create(string message)
+            internal static StringMessageWriter Create(string message, bool computeLength = false)
             {
-                return string.IsNullOrEmpty(message) ? default(StringMessageWriter) : new StringMessageWriter(message, 0, message.Length);
+                return string.IsNullOrEmpty(message) ? default(StringMessageWriter) : new StringMessageWriter(message, 0, message.Length, computeLength);
             }
         }
         struct ByteArrayMessageWriter : IMessageWriter
