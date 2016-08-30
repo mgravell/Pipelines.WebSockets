@@ -115,6 +115,7 @@ namespace Channels.WebSockets
                         connections.TryAdd(socket, socket);
                         WriteStatus("Processing incoming frames...");
                         await socket.ProcessIncomingFramesAsync(this);
+                        WriteStatus("Exiting...");
                         socket.Close();
                     }
                     catch (Exception ex)
@@ -161,7 +162,7 @@ namespace Channels.WebSockets
 
             internal async Task ProcessIncomingFramesAsync(WebSocketServer server)
             {
-                do
+                while(!IsClosed)
                 {
                     ReadableBuffer buffer = await connection.Input;
                     try
@@ -195,7 +196,6 @@ namespace Channels.WebSockets
                         buffer.Consumed(buffer.Start);
                     }
                 }
-                while (true);
             }
             WebSocketsFrame.OpCodes lastOpCode;
             internal WebSocketsFrame.OpCodes GetEffectiveOpCode(ref WebSocketsFrame frame)
@@ -289,7 +289,7 @@ namespace Channels.WebSockets
                 }
             }
             public bool IsClosed => isClosed;
-            private bool isClosed;
+            private volatile bool isClosed;
             internal void Close(Exception error = null)
             {
                 isClosed = true;
