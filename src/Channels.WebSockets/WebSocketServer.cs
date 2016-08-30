@@ -1,4 +1,5 @@
 ﻿using Channels.Networking.Libuv;
+using Channels.Text.Primitives;
 using System;
 using System.Collections;
 using System.Collections.Concurrent;
@@ -1162,7 +1163,6 @@ namespace Channels.WebSockets
                             {
                                 throw new Exception();
                             }
-
                             headerName = headerPair.Slice(0, delim).TrimStart();
                             headerPair = headerPair.Slice(delim).Slice(1);
 
