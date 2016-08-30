@@ -16,7 +16,7 @@
   },
 
   "frameworks": {
-    "net451": { "buildOptions": { "define": [ "VOLATILE_READ" ] } },
+    "net451": { "buildOptions": { "define": [ "VOLATILE_READ", "ENCODING_POINTER_API" ] } },
     "netstandard1.3": {
       "dependencies": {
         "System.Threading.Overlapped": "4.0.1"
