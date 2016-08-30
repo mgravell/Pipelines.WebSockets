@@ -1,23 +1,23 @@
-﻿using System;
-using System.Net;
-using System.Threading;
-using Microsoft.AspNetCore.Server.Kestrel.Internal.Networking;
-using System.Numerics;
-using System.Threading.Tasks;
+﻿using Channels.Networking.Libuv;
+using System;
+using System.Collections;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
-using System.Collections;
-using System.Text;
-using System.Security.Cryptography;
-using System.Diagnostics;
+using System.Net;
+using System.Numerics;
 using System.Runtime.CompilerServices;
+using System.Security.Cryptography;
+using System.Text;
+using System.Threading.Tasks;
 
 namespace Channels.WebSockets
 {
     public class WebSocketServer : IDisposable
     {
         private UvTcpListener listener;
+        private UvThread thread;
         private IPAddress ip;
         private int port;
         public int Port => port;
@@ -37,15 +37,19 @@ namespace Channels.WebSockets
         ~WebSocketServer() { Dispose(false); }
         protected virtual void Dispose(bool disposing)
         {
-            if (disposing) GC.SuppressFinalize(this);
-            Stop(disposing);
+            if (disposing)
+            {
+                GC.SuppressFinalize(this);
+                Stop();
+            }            
         }
 
         public void Start()
         {
             if (listener == null)
             {
-                listener = new UvTcpListener(ip, port);
+                thread = new UvThread();
+                listener = new UvTcpListener(thread, new IPEndPoint(ip, port));
                 listener.OnConnection(async connection =>
                 {
                     try
@@ -63,11 +67,14 @@ namespace Channels.WebSockets
                             WriteStatus("Completing handshake...");
                             await socket.WebSocketProtocol.CompleteHandshakeAsync(request, socket);
                         }
+                        WriteStatus("Handshake complete hook...");
                         await OnHandshakeCompleteAsync(socket);
+                        WriteStatus("Processing incoming frames...");
                         await socket.ProcessIncomingFramesAsync(this);
                     }
                     catch (Exception ex)
                     {// meh, bye bye broken connection
+                        WriteStatus(ex.StackTrace);
                         WriteStatus(ex.GetType().Name);
                         WriteStatus(ex.Message);
                     }
@@ -89,9 +96,9 @@ namespace Channels.WebSockets
 
         public class WebSocketConnection
         {
-            private UvTcpConnection connection;
-            internal UvTcpConnection Connection => connection;
-            internal WebSocketConnection(UvTcpConnection connection)
+            private UvTcpServerConnection connection;
+            internal UvTcpServerConnection Connection => connection;
+            internal WebSocketConnection(UvTcpServerConnection connection)
             {
                 this.connection = connection;
             }
@@ -104,19 +111,20 @@ namespace Channels.WebSockets
 
             internal async Task ProcessIncomingFramesAsync(WebSocketServer server)
             {
+                ReadableBuffer buffer;
+                bool keepReading;
                 do
                 {
-                    await connection.Input;
+                    buffer = await connection.Input;
+                    keepReading = TryReadFrame(server, ref buffer);
+                    buffer.Consumed(buffer.Start);
                 }
-                while (TryReadFrame(server));
+                while (keepReading);
             }
 
-            private bool TryReadFrame(WebSocketServer server)
+            private bool TryReadFrame(WebSocketServer server, ref ReadableBuffer buffer)
             {
-                var input = connection.Input;
-                var buffer = input.BeginRead();
-
-                if (buffer.IsEmpty && input.Completion.IsCompleted)
+                if (buffer.IsEmpty && connection.Input.Completion.IsCompleted)
                 {
                     return false; // that's all, folks
                 }
@@ -139,7 +147,6 @@ namespace Channels.WebSockets
                     // and finally, progress past the frame
                     if (payloadLength != 0) buffer = buffer.Slice(payloadLength);
                 }
-                input.EndRead(buffer);
                 return true; // keep reading
             }
         }
@@ -198,7 +205,7 @@ namespace Channels.WebSockets
         protected virtual Task<bool> OnAuthenticateAsync(WebSocketConnection connection) => TaskResult.True;
         protected virtual Task OnHandshakeCompleteAsync(WebSocketConnection connection) => TaskResult.True;
 
-        private WebSocketConnection GetProtocol(UvTcpConnection connection, HttpRequest request)
+        private WebSocketConnection GetProtocol(UvTcpServerConnection connection, HttpRequest request)
         {
             var headers = request.Headers;
             string host = headers.GetAscii("Host");
@@ -413,10 +420,10 @@ namespace Channels.WebSockets
                     WebSocketServer.WriteStatus($"Response token: {hashBase64}");
 
                     buffer.Write(StandardPrefixBytes, 0, StandardPrefixBytes.Length);
-                    buffer.UpdateWritten(Encoding.ASCII.GetBytes(hashBase64, 0, hashBase64.Length, buffer.Memory.Array, buffer.Memory.Offset));
+                    buffer.CommitBytes(Encoding.ASCII.GetBytes(hashBase64, 0, hashBase64.Length, buffer.Memory.Array, buffer.Memory.Offset));
                     buffer.Write(StandardPostfixBytes, 0, StandardPostfixBytes.Length);
 
-                    return connection.Output.WriteAsync(buffer);
+                    return buffer.FlushAsync();
                 }
                 static readonly byte[] WebSocketKeySuffixBytes = Encoding.ASCII.GetBytes("258EAFA5-E914-47DA-95CA-C5AB0DC85B11");
 
@@ -681,9 +688,8 @@ namespace Channels.WebSockets
                 bool needMoreData = true;
                 while (needMoreData)
                 {
-                    await _input;
+                    var buffer = await _input;
 
-                    var buffer = _input.BeginRead();
                     var consumed = buffer.Start;
                     needMoreData = true;
 
@@ -822,7 +828,7 @@ namespace Channels.WebSockets
                     }
                     finally
                     {
-                        _input.EndRead(consumed);
+                        buffer.Consumed(consumed);
                     }
                 }
                 var result = new HttpRequest(Method, Path, HttpVersion, Headers);
@@ -892,12 +898,12 @@ namespace Channels.WebSockets
             return true;
         }
 
-        public void Stop() => Stop(true);
-
-        private void Stop(bool wait)
+        public void Stop()
         {
-            listener?.Stop(wait);
+            listener?.Stop();
+            thread?.Dispose();
             listener = null;
+            thread = null;
         }
     }
 }

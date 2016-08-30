@@ -46,16 +46,23 @@ namespace ConsoleApplication
                     await socket.ConnectAsync(uri, token);
                     WriteStatus("connected");
                     var buffer = new byte[2048];
-                    string msg = "hello from client to server";
-                    int len = Encoding.ASCII.GetBytes(msg, 0, msg.Length, buffer, 0);
-                    WriteStatus("sending...");
-                    await socket.SendAsync(new ArraySegment<byte>(buffer, 0, len), WebSocketMessageType.Text, true, token);
-                    WriteStatus("sent...");
-                    WriteStatus("receiving...");
-                    var result = await socket.ReceiveAsync(new ArraySegment<byte>(buffer, 0, buffer.Length), token);
-                    WriteStatus("received");
-                    WriteStatus(result.MessageType.ToString());
-                    WriteStatus(Encoding.ASCII.GetString(buffer, 0, result.Count));
+                    int count = 0;
+
+                    do
+                    {
+                        string msg = "hello from client to server " + ++count;
+                        int len = Encoding.ASCII.GetBytes(msg, 0, msg.Length, buffer, 0);
+                        WriteStatus("sending...");
+                        await socket.SendAsync(new ArraySegment<byte>(buffer, 0, len), WebSocketMessageType.Text, true, token);
+                        WriteStatus("sent...");
+                        //WriteStatus("receiving...");
+                        //var result = await socket.ReceiveAsync(new ArraySegment<byte>(buffer, 0, buffer.Length), token);
+                        //WriteStatus("received");
+                        //WriteStatus(result.MessageType.ToString());
+                        //WriteStatus(Encoding.ASCII.GetString(buffer, 0, result.Count));
+
+                        await Task.Delay(5000, token);
+                    } while (!token.IsCancellationRequested);
                 }
             }
             catch (Exception ex)

@@ -5,7 +5,8 @@
     "emitEntryPoint": true
   },
   "dependencies": {
-    "Channels": "1.0.0",
+    "Channels": "0.1.0-beta-49",
+    "Channels.Networking.Libuv": "0.1.0-beta-49",
     "Channels.WebSockets": {
       "target": "project",
       "version": "1.0.0-*"
