@@ -5,22 +5,23 @@
     "emitEntryPoint": true
   },
   "dependencies": {
-    "Channels": "0.1.0-beta-55",
-    "Channels.Networking.Libuv": "0.1.0-beta-55",
-    "Channels.Text.Primitives": "0.1.0-beta-55",
+    "Channels": "0.1.0-beta-62",
+    "Channels.Networking.Libuv": "0.1.0-beta-62",
+    "Channels.Text.Primitives": "0.1.0-beta-62",
     "Channels.WebSockets": {
       "target": "project",
       "version": "1.0.0-*"
-    },
-    "system.net.websockets.client": "4.0.0-beta-23123"
+    }    
   },
   "frameworks": {
+    "net451": {},
     "netcoreapp1.0": {
       "dependencies": {
         "Microsoft.NETCore.App": {
           "type": "platform",
           "version": "1.0.0"
-        }
+        },
+        "system.net.websockets.client": "4.0.0-beta-23123"
       },
       "imports": "dnxcore50"
     }

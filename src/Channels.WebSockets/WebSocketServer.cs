@@ -665,7 +665,7 @@ namespace Channels.WebSockets
                 if (buffers == null)
                 {
                     ApplyMask();
-                    Write(ref buffer, ref destination);
+                    destination.Append(ref buffer);
                 }
                 else
                 {
@@ -676,26 +676,11 @@ namespace Channels.WebSockets
                         while(iter.MoveNext())
                         {
                             tmp = iter.Current;
-                            Write(ref tmp, ref destination);
+                            destination.Append(ref tmp);
                         }
                     }
                 }
                 
-            }
-            static void Write(ref ReadableBuffer source, ref WritableBuffer destination)
-            {
-                if (source.IsSingleSpan)
-                {
-                    var span = source.FirstSpan;
-                    destination.Write(span.Array, span.Offset, span.Length);
-                }
-                else
-                {
-                    foreach (var span in source)
-                    {
-                        destination.Write(span.Array, span.Offset, span.Length);
-                    }
-                }
             }
         }
         private static readonly byte[] NilBytes = new byte[0];
@@ -772,7 +757,7 @@ namespace Channels.WebSockets
                 }
                 else
                 {
-                    var version = headers.GetRaw("Sec-WebSocket-Version").GetInt32();
+                    var version = headers.GetRaw("Sec-WebSocket-Version").GetUInt32();
                     switch (version)
                     {
 
@@ -1047,30 +1032,56 @@ namespace Channels.WebSockets
                 }
                 internal unsafe override bool TryReadFrameHeader(ref ReadableBuffer buffer, out WebSocketsFrame frame)
                 {
-                    frame = default(WebSocketsFrame);
-                    int payloadLength, bytesAvailable = buffer.Length;
-                    if (bytesAvailable < 2) return false; // can't read that; frame takes at minimum two bytes
+                    int bytesAvailable = buffer.Length;
+                    if (bytesAvailable < 2)
+                    {
+                        frame = default(WebSocketsFrame);
+                        return false; // can't read that; frame takes at minimum two bytes
+                    }
 
+                    var span = buffer.FirstSpan;
+                    if (span.Length >= 14)
+                    {
+                        return TryReadFrameHeader(bytesAvailable, (byte*)span.BufferPtr, ref buffer, out frame);
+                    }
+                    else
+                    {
+                        return TryReadFrameHeaderMultiSpan(ref buffer, out frame);
+                    }
+                }
+                internal unsafe bool TryReadFrameHeaderMultiSpan(ref ReadableBuffer buffer, out WebSocketsFrame frame)
+                {
                     // header is at most 14 bytes; can afford the stack for that - but note that if we aim for 16 bytes instead,
                     // we will usually benefit from using 2 qword copies (handled internally); very very small messages ('a') might
                     // have to use the slower version, but... meh
                     byte* header = stackalloc byte[16];
-                    SlowCopyFirst(buffer, header, 16);
-
+                    int bytesAvailable = SlowCopyFirst(buffer, header, 16);
+                    return TryReadFrameHeader(bytesAvailable, header, ref buffer, out frame);
+                }
+                internal unsafe bool TryReadFrameHeader(int bytesAvailable, byte* header, ref ReadableBuffer buffer, out WebSocketsFrame frame)
+                {
                     bool masked = (header[1] & 128) != 0;
                     int tmp = header[1] & 127;
-                    int headerLength, maskOffset;
+                    int headerLength, maskOffset, payloadLength;
                     switch (tmp)
                     {
                         case 126:
                             headerLength = masked ? 8 : 4;
-                            if (bytesAvailable < headerLength) return false;
+                            if (bytesAvailable < headerLength)
+                            {
+                                frame = default(WebSocketsFrame);
+                                return false;
+                            }
                             payloadLength = (header[2] << 8) | header[3];
                             maskOffset = 4;
                             break;
                         case 127:
                             headerLength = masked ? 14 : 10;
-                            if (bytesAvailable < headerLength) return false;
+                            if (bytesAvailable < headerLength)
+                            {
+                                frame = default(WebSocketsFrame);
+                                return false;
+                            }
                             int big = ReadBigEndianInt32(header, 2), little = ReadBigEndianInt32(header, 6);
                             if (big != 0 || little < 0) throw new ArgumentOutOfRangeException(); // seriously, we're not going > 2GB
                             payloadLength = little;
@@ -1078,12 +1089,20 @@ namespace Channels.WebSockets
                             break;
                         default:
                             headerLength = masked ? 6 : 2;
-                            if (bytesAvailable < headerLength) return false;
+                            if (bytesAvailable < headerLength)
+                            {
+                                frame = default(WebSocketsFrame);
+                                return false;
+                            }
                             payloadLength = tmp;
                             maskOffset = 2;
                             break;
                     }
-                    if (bytesAvailable < headerLength + payloadLength) return false; // body isn't intact
+                    if (bytesAvailable < headerLength + payloadLength)
+                    {
+                        frame = default(WebSocketsFrame);
+                        return false; // body isn't intact
+                    }
 
 
                     frame = new WebSocketsFrame(header[0], masked,
@@ -1093,7 +1112,7 @@ namespace Channels.WebSockets
                     return true;
                 }
 
-                private unsafe uint SlowCopyFirst(ReadableBuffer buffer, byte* destination, uint bytes)
+                private unsafe int SlowCopyFirst(ReadableBuffer buffer, byte* destination, uint bytes)
                 {
                     if (bytes == 0) return 0;
                     if (buffer.IsSingleSpan)
@@ -1101,7 +1120,7 @@ namespace Channels.WebSockets
                         var span = buffer.FirstSpan;
                         uint batch = Math.Min((uint)span.Length, bytes);
                         Copy((byte*)span.BufferPtr, destination, batch);
-                        return batch;
+                        return (int)batch;
                     }
                     else
                     {
@@ -1115,7 +1134,7 @@ namespace Channels.WebSockets
                             bytes -= batch;
                             if (bytes == 0) break;
                         }
-                        return copied;
+                        return (int)copied;
                     }
                 }
                 internal override Task WriteAsync<T>(WebSocketConnection connection, WebSocketsFrame.OpCodes opCode, ref T message)

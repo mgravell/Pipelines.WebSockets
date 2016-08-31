@@ -3,12 +3,11 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Net;
-using System.Net.WebSockets;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
-
+using System.Net.WebSockets;
 namespace ConsoleApplication
 {
     public static class Program
@@ -27,6 +26,17 @@ namespace ConsoleApplication
         static bool logging = true;
         public static void Main()
         {
+            TaskScheduler.UnobservedTaskException += (sender, args) =>
+            {
+                args.SetObserved();
+                WriteError(args.Exception);
+            };
+#if DNX451
+            AppDomain.CurrentDomain.UnhandledException += (sender, args) =>
+            {
+                WriteError(args.ExceptionObject as Exception);
+            };
+#endif
             using (var server = new MyServer())
             {
                 server.Start(IPAddress.Loopback, 5001);
@@ -173,7 +183,6 @@ namespace ConsoleApplication
                 Console.WriteLine("Shutting down...");
             }
         }
-
         private static void StartClients(CancellationToken cancel, int count = 1)
         {
             if (count <= 0) return;
@@ -189,8 +198,11 @@ namespace ConsoleApplication
             {
                 e = e.InnerException;
             }
-            Console.WriteLine($"{e.GetType().Name}: {e.Message}");
-            Console.WriteLine(e.StackTrace);
+            if (e != null)
+            {
+                Console.WriteLine($"{e.GetType().Name}: {e.Message}");
+                Console.WriteLine(e.StackTrace);
+            }
         }
 
         static void FireOrForget(this Task task) => task.ContinueWith(t => GC.KeepAlive(t.Exception), TaskContinuationOptions.OnlyOnFaulted);

@@ -2,13 +2,14 @@
   "version": "1.0.0-*",
   "buildOptions": {
     "allowUnsafe": true,
-    "keyFile": "../../tools/Key.snk"
+    "keyFile": "../../tools/Key.snk",
+    "define": ["LOGGING"]
   },
 
   "dependencies": {
-    "Channels": "0.1.0-beta-55",
-    "Channels.Networking.Libuv": "0.1.0-beta-55",
-    "Channels.Text.Primitives": "0.1.0-beta-55",
+    "Channels": "0.1.0-beta-62",
+    "Channels.Networking.Libuv": "0.1.0-beta-62",
+    "Channels.Text.Primitives": "0.1.0-beta-62",
     "Microsoft.AspNetCore.Server.Kestrel": "1.0.0",
     "NETStandard.Library": "1.6.0",
     "System.Numerics.Vectors": "4.1.1",
