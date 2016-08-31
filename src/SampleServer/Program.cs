@@ -24,19 +24,38 @@ namespace ConsoleApplication
             }
         }
         static bool logging = true;
-        public static void Main()
+        public static int Main()
         {
-            TaskScheduler.UnobservedTaskException += (sender, args) =>
+            try
             {
-                args.SetObserved();
-                WriteError(args.Exception);
-            };
+                TaskScheduler.UnobservedTaskException += (sender, args) =>
+                {
+                    Console.WriteLine($"{nameof(TaskScheduler)}.{nameof(TaskScheduler.UnobservedTaskException)}");
+                    args.SetObserved();
+                    WriteError(args.Exception);
+                };
 #if DNX451
-            AppDomain.CurrentDomain.UnhandledException += (sender, args) =>
-            {
-                WriteError(args.ExceptionObject as Exception);
-            };
+                AppDomain.CurrentDomain.UnhandledException += (sender, args) =>
+                {
+                    Console.WriteLine($"{nameof(AppDomain)}.{nameof(AppDomain.UnhandledException)}");
+                    WriteError(args.ExceptionObject as Exception);
+                };
 #endif
+                Run();
+                for(int i = 0; i < 5; i++) // try to force any finalizer bugs
+                {
+                    GC.Collect(GC.MaxGeneration, GCCollectionMode.Forced);
+                    GC.WaitForPendingFinalizers();
+                }
+                return 0;
+            } catch(Exception ex)
+            {
+                WriteError(ex);
+                return -1;
+            }
+        }
+        public static void Run()
+        {
             using (var server = new MyServer())
             {
                 server.Start(IPAddress.Loopback, 5001);
@@ -177,10 +196,8 @@ namespace ConsoleApplication
                             break;
                     }
                 }
-                Console.WriteLine($"Press any key to exit");
-                Console.ReadKey();
-                cancel.Cancel();
                 Console.WriteLine("Shutting down...");
+                cancel.Cancel();                
             }
         }
         private static void StartClients(CancellationToken cancel, int count = 1)
