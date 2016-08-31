@@ -8,6 +8,8 @@ using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Net.WebSockets;
+using System.Numerics;
+
 namespace ConsoleApplication
 {
     public static class Program
@@ -24,7 +26,130 @@ namespace ConsoleApplication
             }
         }
         static bool logging = true;
-        public static int Main()
+        static void XorVector()
+        {
+            Random rand = new Random(12345);
+            byte[] chunk = new byte[16384];
+            rand.NextBytes(chunk);
+            int mask = rand.Next();
+
+            // functionality test first
+            var orig = BitConverter.ToString(chunk, 0, 128);
+            ApplyMaskWithoutAcceleration(chunk, 0, 128, mask);
+            var masked1 = BitConverter.ToString(chunk, 0, 128);
+            ApplyMaskWithoutAcceleration(chunk, 0, 128, mask);
+            var masked2 = BitConverter.ToString(chunk, 0, 128);
+            if (masked1 == orig) throw new InvalidOperationException("unaccelerated mask unsuccessful");
+            if (masked2 != orig) throw new InvalidOperationException("unaccelerated mask unsuccessful");
+            Console.WriteLine("masked and unmasked successfully without acceleration");
+
+            if (Vector.IsHardwareAccelerated)
+            {
+                ApplyMaskWithAcceleration(chunk, 0, 128, mask);
+                var masked3 = BitConverter.ToString(chunk, 0, 128);
+                ApplyMaskWithAcceleration(chunk, 0, 128, mask);
+                var masked4 = BitConverter.ToString(chunk, 0, 128);
+                if (masked3 != masked1) throw new InvalidOperationException("accelerated mask unsuccessful");
+                if (masked4 != orig) throw new InvalidOperationException("accelerated mask unsuccessful");
+                Console.WriteLine("masked and unmasked successfully with acceleration");
+            }
+            else
+            {
+                Console.WriteLine("acceleration not available");
+            }
+
+            const int Cycles = 10000000;
+
+            PerformanceTest(chunk, 0, Vector<byte>.Count, mask, Cycles, false); // dry run for JIT etc
+            PerformanceTest(chunk, 0, Vector<byte>.Count, mask, Cycles);
+            PerformanceTest(chunk, 0, 128, mask, Cycles);
+            PerformanceTest(chunk, 0, 192, mask, Cycles);
+            PerformanceTest(chunk, 0, 256, mask, Cycles); // around the sweet spot
+            PerformanceTest(chunk, 0, 320, mask, Cycles);
+            PerformanceTest(chunk, 0, 384, mask, Cycles);
+            PerformanceTest(chunk, 0, 448, mask, Cycles);
+            PerformanceTest(chunk, 0, 512, mask, Cycles);
+            PerformanceTest(chunk, 0, 1024, mask, Cycles);
+            PerformanceTest(chunk, 0, 2048, mask, Cycles);
+            PerformanceTest(chunk, 0, 16384, mask, Cycles);
+
+        }
+        static void PerformanceTest(byte[] chunk, int offset, int count, int mask, int cycles, bool log = true)
+        {
+            PerformanceTestWithoutAcceleration(chunk, offset, count, mask, cycles, log);
+            if (Vector.IsHardwareAccelerated)
+            {
+                PerformanceTestWithAcceleration(chunk, offset, count, mask, cycles, log);
+            }
+        }
+        static void PerformanceTestWithoutAcceleration(byte[] chunk, int offset, int count, int mask, int cycles, bool log)
+        {
+            CollectGarbage();
+            var watch = Stopwatch.StartNew();
+            for(int i = 1; i < cycles; i++)
+            {
+                ApplyMaskWithoutAcceleration(chunk, offset, count, mask);
+            }
+            watch.Stop();
+            if(log) Console.WriteLine($"{cycles}x{count} bytes, no acceleration: {watch.ElapsedMilliseconds}ms");            
+        }
+        static void PerformanceTestWithAcceleration(byte[] chunk, int offset, int count, int mask, int cycles, bool log)
+        {
+            CollectGarbage();
+            var watch = Stopwatch.StartNew();
+            for (int i = 1; i < cycles; i++)
+            {
+                ApplyMaskWithAcceleration(chunk, offset, count, mask);
+            }
+            watch.Stop();
+            if(log) Console.WriteLine($"{cycles}x{count} bytes, with acceleration: {watch.ElapsedMilliseconds}ms");
+        }
+
+        [ThreadStatic]
+        private static byte[] maskArray;
+
+        static unsafe void ApplyMaskWithAcceleration(byte[] data, int offset, int count, int mask)
+        {
+
+            int vectorWidth = Vector<byte>.Count;
+            var maskArr = maskArray ?? (maskArray = new byte[vectorWidth]);
+            fixed (byte* maskPtr = maskArr)
+            {
+                int* iPtr = (int*)maskPtr;
+                for (int i = 0; i < (maskArr.Length / 4); i++)
+                {
+                    *iPtr++ = mask;
+                }
+            }
+
+            var maskVector = new Vector<byte>(maskArr);
+
+            int chunks = count / vectorWidth;
+            for (int i = 0; i < chunks; i++)
+            {
+                var dataVector = new Vector<byte>(data, offset);
+                dataVector ^= maskVector;
+                dataVector.CopyTo(data, offset);
+                offset += vectorWidth;
+            }
+            // count = count % vectorWidth;
+        }
+        static unsafe void ApplyMaskWithoutAcceleration(byte[] data, int offset, int count, int mask)
+        {
+            ulong mask8 = (uint)mask;
+            mask8 = (mask8 << 32) | mask8;
+
+            int chunks = count >> 3;
+            fixed (byte* ptr = data)
+            {
+                var ptr8 = (ulong*)(ptr + offset);
+                for (int i = 0; i < chunks; i++)
+                {
+                    (*ptr8++) ^= mask8;
+                }
+            }
+        }
+        static int Main()
         {
             try
             {
@@ -41,12 +166,9 @@ namespace ConsoleApplication
                     WriteError(args.ExceptionObject as Exception);
                 };
 #endif
-                Run();
-                for(int i = 0; i < 5; i++) // try to force any finalizer bugs
-                {
-                    GC.Collect(GC.MaxGeneration, GCCollectionMode.Forced);
-                    GC.WaitForPendingFinalizers();
-                }
+                // XorVector();
+                RunServer();
+                CollectGarbage();
                 return 0;
             } catch(Exception ex)
             {
@@ -54,7 +176,17 @@ namespace ConsoleApplication
                 return -1;
             }
         }
-        public static void Run()
+
+        private static void CollectGarbage()
+        {
+            for (int i = 0; i < 5; i++) // try to force any finalizer bugs
+            {
+                GC.Collect(GC.MaxGeneration, GCCollectionMode.Forced);
+                GC.WaitForPendingFinalizers();
+            }
+        }
+
+        public static void RunServer()
         {
             using (var server = new MyServer())
             {
