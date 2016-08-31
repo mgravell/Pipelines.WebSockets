@@ -1,4 +1,5 @@
-﻿using System;
+﻿using Channels.Text.Primitives;
+using System;
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading.Tasks;
@@ -33,7 +34,7 @@ namespace Channels.WebSockets
                 WebSocketServer.WriteStatus($"Response token: {hashBase64}");
 
                 buffer.Write(StandardPrefixBytes, 0, StandardPrefixBytes.Length);
-                buffer.CommitBytes(Encoding.ASCII.GetBytes(hashBase64, 0, hashBase64.Length, buffer.Memory.Array, buffer.Memory.Offset));
+                WritableBufferExtensions.WriteAsciiString(ref buffer, hashBase64);
                 buffer.Write(StandardPostfixBytes, 0, StandardPostfixBytes.Length);
 
                 return buffer.FlushAsync();
@@ -70,33 +71,25 @@ namespace Channels.WebSockets
 
                 const int ExpectedKeyLength = 24;
 
-                int len = key.Length, start = 0, end = len, baseOffset = buffer.Offset;
-                if (len < ExpectedKeyLength) throw new ArgumentException("Undersized key", nameof(key));
+                key = ReadableBufferExtensions.TrimStart(key);
+                int len = key.Length, baseOffset = buffer.Offset;
+                if (len != ExpectedKeyLength) throw new ArgumentException("Invalid key length", nameof(key));
+
+                if(buffer.Length < (ExpectedKeyLength + WebSocketKeySuffixBytes.Length))
+                    throw new ArgumentException("Insufficient buffer space", nameof(buffer));
+
+                // use the output buffer as a scratch pad to compute the hash
                 byte[] arr = buffer.Array;
-                // note that it might be padded; if so we'll need to trim - allow some slack
-                if ((len + WebSocketKeySuffixBytes.Length) > buffer.Length) throw new ArgumentException("Oversized key", nameof(key));
-                // in-place "trim" to find the base-64 piece
                 key.CopyTo(arr, baseOffset);
-                for (int i = 0; i < len; i++)
-                {
-                    if (IsBase64(arr[baseOffset + i])) break;
-                    start++;
-                }
-                for (int i = len - 1; i >= 0; i--)
-                {
-                    if (IsBase64(arr[baseOffset + i])) break;
-                    end--;
-                }
-
-                if ((end - start) != ExpectedKeyLength) throw new ArgumentException(nameof(key));
-
-                // append the suffix
-                Buffer.BlockCopy(WebSocketKeySuffixBytes, 0, arr, baseOffset + end, WebSocketKeySuffixBytes.Length);
+                Buffer.BlockCopy( // append the magic number from RFC6455
+                    WebSocketKeySuffixBytes, 0,
+                    arr, baseOffset + ExpectedKeyLength,
+                    WebSocketKeySuffixBytes.Length);
 
                 // compute the hash
                 using (var sha = SHA1.Create())
                 {
-                    var hash = sha.ComputeHash(arr, baseOffset + start,
+                    var hash = sha.ComputeHash(arr, baseOffset,
                         ExpectedKeyLength + WebSocketKeySuffixBytes.Length);
                     return Convert.ToBase64String(hash);
                 }
@@ -166,8 +159,12 @@ namespace Channels.WebSockets
                     // we will usually benefit from using 2 qword copies (handled internally); very very small messages ('a') might
                     // have to use the slower version, but... meh
                     byte* header = stackalloc byte[16];
-                    int inspectableBytes = SlowCopyFirst(buffer, header, 16);
-                    return TryReadFrameHeader(inspectableBytes, header, ref buffer, out frame);
+                    var slice = buffer.Slice(0, Math.Min(16, bytesAvailable));
+                    slice.CopyTo(header, slice.Length);
+                    // note that we're using the "slice" above to preview the header, but we
+                    // still want to pass the original buffer down below, so that we can
+                    // check the overall length (payload etc)
+                    return TryReadFrameHeader(slice.Length, header, ref buffer, out frame);
                 }
             }
             internal unsafe bool TryReadFrameHeader(int inspectableBytes, byte* header, ref ReadableBuffer buffer, out WebSocketsFrame frame)
@@ -222,32 +219,6 @@ namespace Channels.WebSockets
                     payloadLength);
                 buffer = buffer.Slice(headerLength); // header is fully consumed now
                 return true;
-            }
-
-            private unsafe int SlowCopyFirst(ReadableBuffer buffer, byte* destination, uint bytes)
-            {
-                if (bytes == 0) return 0;
-                if (buffer.IsSingleSpan)
-                {
-                    var span = buffer.FirstSpan;
-                    uint batch = Math.Min((uint)span.Length, bytes);
-                    Copy((byte*)span.BufferPtr, destination, batch);
-                    return (int)batch;
-                }
-                else
-                {
-                    uint copied = 0;
-                    foreach (var span in buffer)
-                    {
-                        uint batch = Math.Min((uint)span.Length, bytes);
-                        Copy((byte*)span.BufferPtr, destination, batch);
-                        destination += batch;
-                        copied += batch;
-                        bytes -= batch;
-                        if (bytes == 0) break;
-                    }
-                    return (int)copied;
-                }
             }
             internal override Task WriteAsync<T>(WebSocketConnection connection, WebSocketsFrame.OpCodes opCode, ref T message)
             {
