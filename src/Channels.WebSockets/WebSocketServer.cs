@@ -98,15 +98,20 @@ namespace Channels.WebSockets
                         WriteStatus("Connected");
 
                         WriteStatus("Parsing http request...");
-                        using (var request = await ParseHttpRequest(connection.Input))
+                        var request = await ParseHttpRequest(connection.Input);
+                        try
                         {
                             WriteStatus("Identifying protocol...");
-                            socket = GetProtocol(connection, request);
+                            socket = GetProtocol(connection, ref request);
                             WriteStatus($"Protocol: {socket.WebSocketProtocol.Name}");
                             WriteStatus("Authenticating...");
-                            if (!await OnAuthenticateAsync(socket)) throw new InvalidOperationException("Authentication refused");
+                            if (!await OnAuthenticateAsync(socket, ref request.Headers)) throw new InvalidOperationException("Authentication refused");
                             WriteStatus("Completing handshake...");
-                            await socket.WebSocketProtocol.CompleteHandshakeAsync(request, socket);
+                            await socket.WebSocketProtocol.CompleteHandshakeAsync(ref request, socket);
+                        }
+                        finally
+                        {
+                            request.Dispose(); // can't use "ref request" or "ref headers" otherwise
                         }
                         WriteStatus("Handshake complete hook...");
                         await OnHandshakeCompleteAsync(socket);
@@ -706,10 +711,10 @@ namespace Channels.WebSockets
             public static readonly Task<int> Zero = Task.FromResult(0);
         }
 
-        protected virtual Task<bool> OnAuthenticateAsync(WebSocketConnection connection) => TaskResult.True;
+        protected virtual Task<bool> OnAuthenticateAsync(WebSocketConnection connection, ref HttpRequestHeaders headers) => TaskResult.True;
         protected virtual Task OnHandshakeCompleteAsync(WebSocketConnection connection) => TaskResult.True;
 
-        private WebSocketConnection GetProtocol(UvTcpServerConnection connection, HttpRequest request)
+        private WebSocketConnection GetProtocol(UvTcpServerConnection connection, ref HttpRequest request)
         {
             var headers = request.Headers;
             string host = headers.GetAscii("Host");
@@ -754,8 +759,7 @@ namespace Channels.WebSockets
                 //9.   The request MUST include a header field with the name
                 //|Sec-WebSocket-Version|.  The value of this header field MUST be
 
-                string version = headers.GetAscii("Sec-WebSocket-Version");
-                if (version == null)
+                if (!headers.ContainsKey("Sec-WebSocket-Version"))
                 {
                     if (headers.ContainsKey("Sec-WebSocket-Key1") && headers.ContainsKey("Sec-WebSocket-Key2"))
                     { // smells like hixie-76/hybi-00
@@ -768,15 +772,16 @@ namespace Channels.WebSockets
                 }
                 else
                 {
+                    var version = headers.GetRaw("Sec-WebSocket-Version").GetInt32();
                     switch (version)
                     {
 
-                        case "4":
-                        case "5":
-                        case "6":
-                        case "7":
-                        case "8": // these are all early drafts
-                        case "13": // this is later drafts and RFC6455
+                        case 4:
+                        case 5:
+                        case 6:
+                        case 7:
+                        case 8: // these are all early drafts
+                        case 13: // this is later drafts and RFC6455
                             protocol = WebSocketProtocol.RFC6455_13;
                             break;
                         default:
@@ -906,7 +911,7 @@ namespace Channels.WebSockets
                                     + "Connection: Upgrade\r\n"
                                     + "Sec-WebSocket-Accept: "),
                     StandardPostfixBytes = Encoding.ASCII.GetBytes("\r\n\r\n");
-                internal override Task CompleteHandshakeAsync(HttpRequest request, WebSocketConnection socket)
+                internal override Task CompleteHandshakeAsync(ref HttpRequest request, WebSocketConnection socket)
                 {
                     var key = request.Headers.GetRaw("Sec-WebSocket-Key");
 
@@ -1144,7 +1149,7 @@ namespace Channels.WebSockets
             class WebSocketProtocol_Hixie76_00 : WebSocketProtocol
             {
                 public override string Name => "Hixie76";
-                internal override Task CompleteHandshakeAsync(HttpRequest request, WebSocketConnection socket)
+                internal override Task CompleteHandshakeAsync(ref HttpRequest request, WebSocketConnection socket)
                 {
                     throw new NotImplementedException();
                 }
@@ -1158,7 +1163,7 @@ namespace Channels.WebSockets
                 }
             }
 
-            internal abstract Task CompleteHandshakeAsync(HttpRequest request, WebSocketConnection socket);
+            internal abstract Task CompleteHandshakeAsync(ref HttpRequest request, WebSocketConnection socket);
 
             internal abstract bool TryReadFrameHeader(ref ReadableBuffer buffer, out WebSocketsFrame frame);
 
@@ -1180,7 +1185,7 @@ namespace Channels.WebSockets
             public ReadableBuffer Path { get; private set; }
             public ReadableBuffer HttpVersion { get; private set; }
 
-            public HttpRequestHeaders Headers { get; private set; }
+            public HttpRequestHeaders Headers; // yes, naked field - internal type, so not too exposed; allows for "ref" without copy
 
             public HttpRequest(ReadableBuffer method, ReadableBuffer path, ReadableBuffer httpVersion, Dictionary<string, ReadableBuffer> headers)
             {
@@ -1190,7 +1195,7 @@ namespace Channels.WebSockets
                 Headers = new HttpRequestHeaders(headers);
             }
         }
-        internal struct HttpRequestHeaders : IEnumerable<KeyValuePair<string, ReadableBuffer>>, IDisposable
+        public struct HttpRequestHeaders : IEnumerable<KeyValuePair<string, ReadableBuffer>>, IDisposable
         {
             private Dictionary<string, ReadableBuffer> headers;
             public void Dispose()
@@ -1217,7 +1222,7 @@ namespace Channels.WebSockets
                 if (headers.TryGetValue(key, out buffer)) return buffer.GetAsciiString();
                 return null;
             }
-            public ReadableBuffer GetRaw(string key)
+            internal ReadableBuffer GetRaw(string key)
             {
                 ReadableBuffer buffer;
                 if (headers.TryGetValue(key, out buffer)) return buffer;
