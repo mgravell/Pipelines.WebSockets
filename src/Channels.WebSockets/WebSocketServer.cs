@@ -1042,7 +1042,7 @@ namespace Channels.WebSockets
                     var span = buffer.FirstSpan;
                     if (span.Length >= 14)
                     {
-                        return TryReadFrameHeader(bytesAvailable, (byte*)span.BufferPtr, ref buffer, out frame);
+                        return TryReadFrameHeader(14, (byte*)span.BufferPtr, ref buffer, out frame);
                     }
                     else
                     {
@@ -1055,10 +1055,10 @@ namespace Channels.WebSockets
                     // we will usually benefit from using 2 qword copies (handled internally); very very small messages ('a') might
                     // have to use the slower version, but... meh
                     byte* header = stackalloc byte[16];
-                    int bytesAvailable = SlowCopyFirst(buffer, header, 16);
-                    return TryReadFrameHeader(bytesAvailable, header, ref buffer, out frame);
+                    int inspectableBytes = SlowCopyFirst(buffer, header, 16);
+                    return TryReadFrameHeader(inspectableBytes, header, ref buffer, out frame);
                 }
-                internal unsafe bool TryReadFrameHeader(int bytesAvailable, byte* header, ref ReadableBuffer buffer, out WebSocketsFrame frame)
+                internal unsafe bool TryReadFrameHeader(int inspectableBytes, byte* header, ref ReadableBuffer buffer, out WebSocketsFrame frame)
                 {
                     bool masked = (header[1] & 128) != 0;
                     int tmp = header[1] & 127;
@@ -1067,7 +1067,7 @@ namespace Channels.WebSockets
                     {
                         case 126:
                             headerLength = masked ? 8 : 4;
-                            if (bytesAvailable < headerLength)
+                            if (inspectableBytes < headerLength)
                             {
                                 frame = default(WebSocketsFrame);
                                 return false;
@@ -1077,7 +1077,7 @@ namespace Channels.WebSockets
                             break;
                         case 127:
                             headerLength = masked ? 14 : 10;
-                            if (bytesAvailable < headerLength)
+                            if (inspectableBytes < headerLength)
                             {
                                 frame = default(WebSocketsFrame);
                                 return false;
@@ -1089,7 +1089,7 @@ namespace Channels.WebSockets
                             break;
                         default:
                             headerLength = masked ? 6 : 2;
-                            if (bytesAvailable < headerLength)
+                            if (inspectableBytes < headerLength)
                             {
                                 frame = default(WebSocketsFrame);
                                 return false;
@@ -1098,10 +1098,10 @@ namespace Channels.WebSockets
                             maskOffset = 2;
                             break;
                     }
-                    if (bytesAvailable < headerLength + payloadLength)
+                    if (buffer.Length < headerLength + payloadLength)
                     {
                         frame = default(WebSocketsFrame);
-                        return false; // body isn't intact
+                        return false; // frame (header+body) isn't intact
                     }
 
 
