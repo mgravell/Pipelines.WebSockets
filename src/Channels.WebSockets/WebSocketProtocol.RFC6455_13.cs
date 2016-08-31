@@ -156,9 +156,9 @@ namespace Channels.WebSockets
                 }
 
                 var span = buffer.FirstSpan;
-                if (span.Length >= MaxHeaderLength)
+                if (buffer.IsSingleSpan || span.Length >= MaxHeaderLength)
                 {
-                    return TryReadFrameHeader(MaxHeaderLength, (byte*)span.BufferPtr, ref buffer, out frame);
+                    return TryReadFrameHeader(span.Length, (byte*)span.BufferPtr, ref buffer, out frame);
                 }
                 else
                 {
