@@ -1046,17 +1046,13 @@ namespace Channels.WebSockets
                     }
                     else
                     {
-                        return TryReadFrameHeaderMultiSpan(ref buffer, out frame);
+                        // header is at most 14 bytes; can afford the stack for that - but note that if we aim for 16 bytes instead,
+                        // we will usually benefit from using 2 qword copies (handled internally); very very small messages ('a') might
+                        // have to use the slower version, but... meh
+                        byte* header = stackalloc byte[16];
+                        int inspectableBytes = SlowCopyFirst(buffer, header, 16);
+                        return TryReadFrameHeader(inspectableBytes, header, ref buffer, out frame);
                     }
-                }
-                internal unsafe bool TryReadFrameHeaderMultiSpan(ref ReadableBuffer buffer, out WebSocketsFrame frame)
-                {
-                    // header is at most 14 bytes; can afford the stack for that - but note that if we aim for 16 bytes instead,
-                    // we will usually benefit from using 2 qword copies (handled internally); very very small messages ('a') might
-                    // have to use the slower version, but... meh
-                    byte* header = stackalloc byte[16];
-                    int inspectableBytes = SlowCopyFirst(buffer, header, 16);
-                    return TryReadFrameHeader(inspectableBytes, header, ref buffer, out frame);
                 }
                 internal unsafe bool TryReadFrameHeader(int inspectableBytes, byte* header, ref ReadableBuffer buffer, out WebSocketsFrame frame)
                 {
