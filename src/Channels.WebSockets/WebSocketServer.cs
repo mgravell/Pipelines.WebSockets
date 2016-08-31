@@ -152,7 +152,7 @@ namespace Channels.WebSockets
         struct StringMessageWriter : IMessageWriter
         {
             private string value;
-            public int offset, count, totalBytes;
+            private int offset, count, totalBytes;
             public StringMessageWriter(string value, int offset, int count, bool preComputeLength)
             {
                 if (offset < 0) throw new ArgumentOutOfRangeException(nameof(offset));
@@ -223,7 +223,7 @@ namespace Channels.WebSockets
         struct ByteArrayMessageWriter : IMessageWriter
         {
             private byte[] value;
-            public int offset, count;
+            private int offset, count;
             public ByteArrayMessageWriter(byte[] value, int offset, int count)
             {
                 if (offset < 0) throw new ArgumentOutOfRangeException(nameof(offset));
@@ -317,31 +317,39 @@ namespace Channels.WebSockets
             }
 
 
+            volatile List<ReadableBuffer> backlog;
             // TODO: not sure how to do this; basically I want to lease a writable, expandable area
             // for a duration, and be able to access it for reading, and release
             internal void AddBacklog(ref ReadableBuffer buffer, ref WebSocketsFrame frame)
             {
-                // unscramble the data
-                if (frame.Mask != 0)
-                {
-                    var tmp = buffer.Slice(0, frame.PayloadLength);
-                    WebSocketsFrame.ApplyMask(ref tmp, frame.Mask);
-                }
+                var length = frame.PayloadLength;
+                if (length == 0) return; // nothing to store!
 
-                // something like:
-                // foo.Ensure(payloadLength)
-                // foo.Write(ref buffer, payloadLength);
-                throw new NotImplementedException(nameof(AddBacklog));
+                var slicedBuffer = buffer.Slice(0, length);
+                // unscramble the data
+                if (frame.Mask != 0) WebSocketsFrame.ApplyMask(ref slicedBuffer, frame.Mask);
+
+                var backlog = this.backlog;
+                if(backlog == null)
+                {
+                    var newBacklog = new List<ReadableBuffer>();
+                    backlog = Interlocked.CompareExchange(ref this.backlog, newBacklog, null) ?? newBacklog;
+                }
+                backlog.Add(slicedBuffer.Preserve());
             }
             internal void ClearBacklog()
             {
-                // something like
-                // var tmp = foo;
-                // foo = default(Whatever);
-                // foo.Dispose(); // basically, release the lease
+                var backlog = this.backlog;
+                if(backlog != null)
+                {
+                    foreach (var buffer in backlog)
+                        buffer.Dispose();
+                    backlog.Clear();
+                }
             }
-            public bool HasBacklog => false; // something like => foo.Length != 0;
-            public ReadableBuffer BacklogBuffer => default(ReadableBuffer); // something like => foo
+            public bool HasBacklog => (backlog?.Count ?? 0) != 0;
+
+            internal List<ReadableBuffer> GetBacklog() => backlog;
 
             public Task SendAsync(string message)
             {
@@ -450,6 +458,7 @@ namespace Channels.WebSockets
             public void Dispose()
             {
                 ((IDisposable)writeLock)?.Dispose();
+                ClearBacklog();
             }
         }
 
@@ -463,22 +472,22 @@ namespace Channels.WebSockets
             // if we don't get as far as the 'switch' 
             var opCode = connection.GetEffectiveOpCode(ref frame);
 
-
+            Message msg;
             if (!frame.IsControlFrame)
             {
                 if (frame.IsFinal)
                 {
                     if (connection.HasBacklog)
                     {
-
                         try
                         {
                             // add our data to the existing backlog
                             connection.AddBacklog(ref buffer, ref frame);
 
-                            var backlog = connection.BacklogBuffer;
-                            // use the backlog buffer to execute the method
-                            OnFrameReceivedImplAsync(connection, opCode, 0, true, backlog.Length, ref backlog);
+                            // use the backlog buffer to execute the method; note that
+                            // we un-masked *while adding*; don't need mask here
+                            msg = new Message(connection.GetBacklog());
+                            return OnFrameReceivedImplAsync(connection, opCode, ref msg);                            
                         }
                         finally
                         {
@@ -494,24 +503,23 @@ namespace Channels.WebSockets
                     return TaskResult.True;
                 }
             }
-
-            return OnFrameReceivedImplAsync(connection, opCode, frame.Mask, frame.IsFinal, frame.PayloadLength, ref buffer);
+            msg = new Message(buffer.Slice(0, frame.PayloadLength), frame.Mask, frame.IsFinal);
+            return OnFrameReceivedImplAsync(connection, opCode, ref msg);
         }
-        private Task OnFrameReceivedImplAsync(WebSocketConnection connection, WebSocketsFrame.OpCodes opCode, int mask, bool isFinal, int count, ref ReadableBuffer buffer)
+        private Task OnFrameReceivedImplAsync(WebSocketConnection connection, WebSocketsFrame.OpCodes opCode, ref Message message)
         {
-            Message msg = new Message(buffer.Slice(0, count), mask, isFinal);
             switch (opCode)
             {
                 case WebSocketsFrame.OpCodes.Binary:
-                    return OnBinaryAsync(connection, ref msg);
+                    return OnBinaryAsync(connection, ref message);
                 case WebSocketsFrame.OpCodes.Text:
-                    return OnTextAsync(connection, ref msg);
+                    return OnTextAsync(connection, ref message);
                 case WebSocketsFrame.OpCodes.Close:
-                    return OnCloseAsync(connection, ref msg);
+                    return OnCloseAsync(connection, ref message);
                 case WebSocketsFrame.OpCodes.Ping:
-                    return OnPingAsync(connection, ref msg);
+                    return OnPingAsync(connection, ref message);
                 case WebSocketsFrame.OpCodes.Pong:
-                    return OnPongAsync(connection, ref msg);
+                    return OnPongAsync(connection, ref message);
                 default:
                     return TaskResult.True;
             }
@@ -533,6 +541,7 @@ namespace Channels.WebSockets
         public struct Message : IMessageWriter
         {
             private ReadableBuffer buffer;
+            private List<ReadableBuffer> buffers;
             private int mask;
             private string text;
             public bool IsFinal { get; }
@@ -542,6 +551,23 @@ namespace Channels.WebSockets
                 this.mask = mask;
                 text = null;
                 IsFinal = isFinal;
+                buffers = null;
+            }
+            internal Message(List<ReadableBuffer> buffers)
+            {
+                mask = 0;
+                text = null;
+                IsFinal = true;
+                if (buffers.Count == 1) // can simplify
+                {
+                    buffer = buffers[0];
+                    this.buffers = null;
+                }
+                else
+                {
+                    buffer = default(ReadableBuffer);
+                    this.buffers = buffers;
+                }
             }
             private void ApplyMask()
             {
@@ -556,12 +582,61 @@ namespace Channels.WebSockets
             {
                 if (text != null) return text;
 
-                int len = GetTotalBytes();
-                if (len == 0) return text = "";
+                var buffers = this.buffers;
+                if (buffers == null)
+                {
+                    if (buffer.Length == 0) return text = "";
 
-                ApplyMask();
-                return text = buffer.GetUtf8String();
+                    ApplyMask();
+                    return text = buffer.GetUtf8String();
+                }
+                return text = GetText(buffers);
             }
+
+            private static readonly Encoding Utf8Encoding = Encoding.UTF8;
+            private static Decoder Utf8Decoder;
+
+            private static string GetText(List<ReadableBuffer> buffers)
+            {
+                // try to re-use a shared decoder; note that in heavy usage, we might need to allocate another
+                var decoder = (Decoder)Interlocked.Exchange<Decoder>(ref Utf8Decoder, null);
+                if (decoder == null) decoder = Utf8Encoding.GetDecoder();
+                else decoder.Reset();
+
+                var length = 0;
+                foreach (var buffer in buffers) length += buffer.Length;
+
+                var charLength = length; // worst case is 1 byte per char
+                var chars = new char[charLength];
+                var charIndex = 0;
+
+                int bytesUsed = 0;
+                int charsUsed = 0;
+                bool completed;
+                foreach (var buffer in buffers)
+                {
+                    foreach (var span in buffer)
+                    {
+                        decoder.Convert(
+                            span.Array,
+                            span.Offset,
+                            span.Length,
+                            chars,
+                            charIndex,
+                            charLength - charIndex,
+                            false, // a single character could span two spans
+                            out bytesUsed,
+                            out charsUsed,
+                            out completed);
+
+                        charIndex += charsUsed;
+                    }
+                }
+                // make the decoder available for re-use
+                Interlocked.CompareExchange<Decoder>(ref Utf8Decoder, decoder, null);
+                return new string(chars, 0, charIndex);
+            }
+
             public byte[] GetBytes()
             {
                 int len = GetTotalBytes();
@@ -570,19 +645,48 @@ namespace Channels.WebSockets
                 ApplyMask();
                 return buffer.ToArray();
             }
-            public int GetTotalBytes() => buffer.Length;
+            public int GetTotalBytes()
+            {
+                var buffers = this.buffers;
+                if (buffers == null) return buffer.Length;
+                int count = 0;
+                foreach (var buffer in buffers) count += buffer.Length;
+                return count;
+            }
 
             void IMessageWriter.Write(ref WritableBuffer destination)
             {
-                ApplyMask();
-                if(buffer.IsSingleSpan)
+                var buffers = this.buffers;
+                if (buffers == null)
                 {
-                    var span = buffer.FirstSpan;
+                    ApplyMask();
+                    Write(ref buffer, ref destination);
+                }
+                else
+                {
+                    // all this because C# doesn't let you use "ref" with an iterator variable
+                    using (var iter = buffers.GetEnumerator())
+                    {
+                        ReadableBuffer tmp;
+                        while(iter.MoveNext())
+                        {
+                            tmp = iter.Current;
+                            Write(ref tmp, ref destination);
+                        }
+                    }
+                }
+                
+            }
+            static void Write(ref ReadableBuffer source, ref WritableBuffer destination)
+            {
+                if (source.IsSingleSpan)
+                {
+                    var span = source.FirstSpan;
                     destination.Write(span.Array, span.Offset, span.Length);
                 }
                 else
                 {
-                    foreach(var span in buffer)
+                    foreach (var span in source)
                     {
                         destination.Write(span.Array, span.Offset, span.Length);
                     }
@@ -1176,7 +1280,7 @@ namespace Channels.WebSockets
                             }
 
                             var method = startLine.Slice(0, delim);
-                            Method = method.Clone();
+                            Method = method.Preserve();
 
                             // Skip ' '
                             startLine = startLine.Slice(delim).Slice(1);
@@ -1188,7 +1292,7 @@ namespace Channels.WebSockets
                             }
 
                             var path = startLine.Slice(0, delim);
-                            Path = path.Clone();
+                            Path = path.Preserve();
 
                             // Skip ' '
                             startLine = startLine.Slice(delim).Slice(1);
@@ -1200,7 +1304,7 @@ namespace Channels.WebSockets
                             }
 
                             var httpVersion = startLine.Slice(0, delim);
-                            HttpVersion = httpVersion.Clone();
+                            HttpVersion = httpVersion.Preserve();
 
                             _state = ParsingState.Headers;
                             consumed = startLine.End;
@@ -1273,7 +1377,7 @@ namespace Channels.WebSockets
 
                             headerValue = headerPair.Slice(0, delim).TrimStart();
 
-                            Headers[ToHeaderKey(ref headerName)] = headerValue.Clone();
+                            Headers[ToHeaderKey(ref headerName)] = headerValue.Preserve();
 
                             // Move the consumed
                             consumed = buffer.Start;

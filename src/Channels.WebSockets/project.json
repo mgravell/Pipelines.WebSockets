@@ -6,9 +6,9 @@
   },
 
   "dependencies": {
-    "Channels": "0.1.0-beta-49",
-    "Channels.Networking.Libuv": "0.1.0-beta-49",
-    "Channels.Text.Primitives": "0.1.0-beta-49",
+    "Channels": "0.1.0-beta-55",
+    "Channels.Networking.Libuv": "0.1.0-beta-55",
+    "Channels.Text.Primitives": "0.1.0-beta-55",
     "Microsoft.AspNetCore.Server.Kestrel": "1.0.0",
     "NETStandard.Library": "1.6.0",
     "System.Numerics.Vectors": "4.1.1",

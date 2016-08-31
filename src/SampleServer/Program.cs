@@ -47,6 +47,8 @@ namespace ConsoleApplication
                         Console.WriteLine("cls: clear console");
                         Console.WriteLine("xc: close at client");
                         Console.WriteLine("xs: close at server");
+                        Console.WriteLine($"bf: toggle {nameof(server.BufferFragments)}");
+                        Console.WriteLine("frag: send fragmented message from clients");
                         Console.WriteLine("q: quit");
                         Console.WriteLine($"clients: {ClientCount}; server connections: {server.ConnectionCount}");
                         writeLegend = false;
@@ -65,6 +67,10 @@ namespace ConsoleApplication
                         case "l":
                             logging = !logging;
                             Console.WriteLine("logging is now " + (logging ? "on" : "off"));
+                            break;
+                        case "bf":
+                            server.BufferFragments = !server.BufferFragments;
+                            Console.WriteLine($"{nameof(server.BufferFragments)} is now " + (server.BufferFragments ? "on" : "off"));
                             break;
                         case "xc":
                             CloseAllClients(cancel.Token).ContinueWith(t =>
@@ -111,6 +117,19 @@ namespace ConsoleApplication
                                 try
                                 {
                                     Console.WriteLine($"Sent from {t.Result} clients");
+                                }
+                                catch (Exception e)
+                                {
+                                    WriteError(e);
+                                }
+                            });
+                            break;
+                        case "frag":
+                            SendFragmentedFromClients(cancel.Token).ContinueWith(t =>
+                            {
+                                try
+                                {
+                                    Console.WriteLine($"Sent fragmented from {t.Result} clients");
                                 }
                                 catch (Exception e)
                                 {
@@ -207,6 +226,29 @@ namespace ConsoleApplication
                 var msg = encoding.GetBytes($"Hello from client {client.Id}");
                 try
                 {
+                    await client.Socket.SendAsync(new ArraySegment<byte>(msg, 0, msg.Length), WebSocketMessageType.Text, true, cancel);
+                    count++;
+                }
+                catch { }
+            }
+            return count;
+        }
+
+        private static async Task<int> SendFragmentedFromClients(CancellationToken cancel)
+        {
+            ClientWebSocketWithIdentity[] arr;
+            lock (clients)
+            {
+                arr = clients.ToArray();
+            }
+            int count = 0;
+            foreach (var client in arr)
+            {
+                try
+                {
+                    var msg = encoding.GetBytes($"Hello ");
+                    await client.Socket.SendAsync(new ArraySegment<byte>(msg, 0, msg.Length), WebSocketMessageType.Text, false, cancel);
+                    msg = encoding.GetBytes($"from client {client.Id}");
                     await client.Socket.SendAsync(new ArraySegment<byte>(msg, 0, msg.Length), WebSocketMessageType.Text, true, cancel);
                     count++;
                 }
