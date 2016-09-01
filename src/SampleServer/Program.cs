@@ -209,6 +209,7 @@ namespace SampleServer
                     if (line == "kill")
                     {
                         int count = server.CloseAllConnections();
+                        client.Close();
                         Console.WriteLine($"Closed {count} connections at the server");
                     }
                     else

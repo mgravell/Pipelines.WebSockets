@@ -42,34 +42,46 @@ namespace SampleServer
             thread = new UvThread();
             client = new UvTcpClient(thread, endpoint);
             connection = await client.ConnectAsync();
-            Task.Run(ReadLoop).FireOrForget();
+            ReadLoop(); // will hand over to libuv thread
         }
-        internal async Task ReadLoop()
+        internal async void ReadLoop()
         {
-            while (true)
+            Console.WriteLine("[client] read loop started");
+            try
             {
-                var buffer = await connection.Output;
-                if (buffer.IsEmpty && connection.Output.Completion.IsCompleted)
+                while (true)
                 {
-                    Console.WriteLine("[client] input ended");
-                    break;
+                    var buffer = await connection.Output;
+                    if (buffer.IsEmpty && connection.Output.Completion.IsCompleted)
+                    {
+                        Console.WriteLine("[client] input ended");
+                        break;
+                    }
+
+                    var s = buffer.GetAsciiString();
+                    buffer.Consumed();
+
+                    Console.Write("[client] received: ");
+                    Console.WriteLine(s);
                 }
-
-                var s = buffer.GetAsciiString();
-                buffer.Consumed();
-
-                Console.Write("[client] received: ");
-                Console.WriteLine(s);
+            }
+            finally
+            {
+                Console.WriteLine("[client] read loop ended");
             }
         }
-
-        public void Dispose()
+        public void Close()
         {
-            if(connection != null) Close(connection);
+            if (connection != null) Close(connection);
             connection = null;
             // client.Dispose(); //
             thread?.Dispose();
             thread = null;
+        }
+        public void Dispose() => Dispose(true);
+        private void Dispose(bool disposing)
+        {
+            if (disposing) Close();
         }
 
         private void Close(UvTcpClientConnection connection, Exception error = null)
