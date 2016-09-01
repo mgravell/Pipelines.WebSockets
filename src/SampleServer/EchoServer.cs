@@ -64,7 +64,7 @@ namespace SampleServer
 
                     int len = request.Length;
                     Console.WriteLine($"[server] echoing {len} bytes...");
-                    var response = connection.Output.Alloc(len);
+                    var response = connection.Output.Alloc();
                     response.Append(ref request);
                     await response.FlushAsync();
                     Console.WriteLine($"[server] echoed");

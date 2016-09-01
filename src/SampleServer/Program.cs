@@ -201,20 +201,27 @@ namespace SampleServer
                 client.ConnectAsync(endpoint).FireOrForget();
                 Console.WriteLine("Client connected");
 
-                Console.WriteLine("Write data to echo, or 'kill' to shutdown the socket from the server, 'quit' to exit");
+                Console.WriteLine("Write data to echo, or 'quit' to exit,");
+                Console.WriteLine("'killc' to kill from the client, 'kills' to kill from the server, 'kill' for both");
                 while (true)
                 {
                     var line = Console.ReadLine();
                     if (line == null || line == "quit") break;
-                    if (line == "kill")
+                    switch(line)
                     {
-                        int count = server.CloseAllConnections();
-                        client.Close();
-                        Console.WriteLine($"Closed {count} connections at the server");
-                    }
-                    else
-                    {
-                        client.SendAsync(line).FireOrForget();
+                        case "kill":
+                            server.CloseAllConnections();
+                            client.Close();
+                            break;
+                        case "killc":
+                            client.Close();
+                            break;
+                        case "kills":
+                            server.CloseAllConnections();
+                            break;
+                        default:
+                            client.SendAsync(line).FireOrForget();
+                            break;
                     }
                 }
                 server.Stop();

@@ -14,6 +14,7 @@ namespace SampleServer
 
         internal Task SendAsync(string line)
         {
+            
             try
             {
                 if (connection == null)
@@ -21,9 +22,13 @@ namespace SampleServer
                     Console.WriteLine($"[client] (no connection; cannot send)");
                     return done;
                 }
+                else if (string.IsNullOrEmpty(line))
+                {
+                    return done;
+                }
                 else
                 {
-                    var buffer = connection.Input.Alloc(line.Length);
+                    var buffer = connection.Input.Alloc();
                     Console.WriteLine($"[client] sending {line.Length} bytes...");
                     WritableBufferExtensions.WriteAsciiString(ref buffer, line);
                     return buffer.FlushAsync();
