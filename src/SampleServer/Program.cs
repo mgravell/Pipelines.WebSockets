@@ -220,7 +220,7 @@ namespace ConsoleApplication
                 Console.WriteLine($"Running on {server.IP}:{server.Port}...");
                 CancellationTokenSource cancel = new CancellationTokenSource();
 
-                bool keepGoing = true, writeLegend = true;
+                bool keepGoing = true, writeLegend = true, writeStatus = true;
                 while (keepGoing)
                 {
                     if (writeLegend)
@@ -237,8 +237,14 @@ namespace ConsoleApplication
                         Console.WriteLine($"bf: toggle {nameof(server.BufferFragments)}");
                         Console.WriteLine("frag: send fragmented message from clients");
                         Console.WriteLine("q: quit");
-                        Console.WriteLine($"clients: {ClientCount}; server connections: {server.ConnectionCount}; awaiting input: {WebSocketConnection.AwaitingInput}");
+                        Console.WriteLine("stat: write status");
+                        Console.WriteLine("?: help");
                         writeLegend = false;
+                    }
+                    if(writeStatus)
+                    {
+                        Console.WriteLine($"clients: {ClientCount}; server connections: {server.ConnectionCount}; awaiting input: {WebSocketConnection.AwaitingInput}");
+                        writeStatus = false;
                     }
 
                     var line = Console.ReadLine();
@@ -250,6 +256,12 @@ namespace ConsoleApplication
                             break;
                         case "q":
                             keepGoing = false;
+                            break;
+                        case "stat":
+                            writeStatus = true;
+                            break;
+                        case "?":
+                            writeLegend = true;
                             break;
                         case "l":
                             logging = !logging;
@@ -483,7 +495,7 @@ namespace ConsoleApplication
             {
                 using (var socket = new ClientWebSocket())
                 {
-                    socket.Options.KeepAliveInterval = TimeSpan.FromSeconds(10);
+                    //socket.Options.KeepAliveInterval = TimeSpan.FromSeconds(10);
                     var uri = new Uri("ws://127.0.0.1:5001");
                     WriteStatus($"connecting to {uri}...");
                     await socket.ConnectAsync(uri, token);
