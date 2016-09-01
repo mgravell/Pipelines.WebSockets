@@ -6,7 +6,7 @@ using System.Net;
 
 namespace SampleServer
 {
-    public class TrivialServer : IDisposable
+    public class EchoServer : IDisposable
     {
         private UvTcpListener listener;
         private UvThread thread;
@@ -16,7 +16,7 @@ namespace SampleServer
             {
                 thread = new UvThread();
                 listener = new UvTcpListener(thread, endpoint);
-                listener.OnConnection(ConnectionCallback);
+                listener.OnConnection(OnConnection);
                 listener.Start();
             }
         }
@@ -38,7 +38,7 @@ namespace SampleServer
             }
             return count;
         }
-        private async void ConnectionCallback(UvTcpServerConnection connection)
+        private async void OnConnection(UvTcpServerConnection connection)
         {
             try
             {

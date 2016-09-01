@@ -187,7 +187,7 @@ namespace SampleServer
 
         private static void RunBasicEchoServer()
         {
-            using (var server = new TrivialServer())
+            using (var server = new EchoServer())
             using (var client = new TrivialClient())
             {
                 var endpoint = new IPEndPoint(IPAddress.Loopback, 5002);
