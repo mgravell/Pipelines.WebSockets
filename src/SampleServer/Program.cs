@@ -198,7 +198,7 @@ namespace SampleServer
                 Thread.Sleep(1000); // let things spin up
 
                 Console.WriteLine($"Opening client to {endpoint}...");
-                client.Connect(endpoint);
+                client.ConnectAsync(endpoint).FireOrForget();
                 Console.WriteLine("Client connected");
 
                 Console.WriteLine("Write data to echo, or 'kill' to shutdown the socket from the server, 'quit' to exit");
@@ -213,7 +213,7 @@ namespace SampleServer
                     }
                     else
                     {
-                        client.Send(line);
+                        client.SendAsync(line).FireOrForget();
                     }
                 }
                 server.Stop();
@@ -428,7 +428,7 @@ namespace SampleServer
             }
         }
 
-        static void FireOrForget(this Task task) => task.ContinueWith(t => GC.KeepAlive(t.Exception), TaskContinuationOptions.OnlyOnFaulted);
+        internal static void FireOrForget(this Task task) => task.ContinueWith(t => GC.KeepAlive(t.Exception), TaskContinuationOptions.OnlyOnFaulted);
 
         [Conditional("LOGGING")]
         private static void WriteStatus(string message)

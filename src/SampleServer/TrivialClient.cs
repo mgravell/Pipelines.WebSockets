@@ -1,105 +1,83 @@
-﻿using System;
+﻿using Channels.Networking.Libuv;
+using Channels.Text.Primitives;
+using System;
 using System.Net;
-using System.Net.Sockets;
-using System.Text;
+using System.Threading.Tasks;
 
 namespace SampleServer
 {
     public class TrivialClient : IDisposable
     {
-        Socket socket;
-        internal void Send(string line)
+        UvTcpClient client;
+        UvThread thread;
+        UvTcpClientConnection connection;
+
+        internal Task SendAsync(string line)
         {
             try
             {
-                if (socket == null)
+                if (connection == null)
                 {
-                    Console.WriteLine($"[client] (socket is closed; cannot send)");
+                    Console.WriteLine($"[client] (no connection; cannot send)");
+                    return done;
                 }
                 else
                 {
-                    var arr = Encoding.ASCII.GetBytes(line);
-                    Console.WriteLine($"[client] sending {arr.Length} bytes...");
-                    socket.Send(arr);
-                    Console.WriteLine($"[client] sent");
+                    var buffer = connection.Input.Alloc(line.Length);
+                    Console.WriteLine($"[client] sending {line.Length} bytes...");
+                    WritableBufferExtensions.WriteAsciiString(ref buffer, line);
+                    return buffer.FlushAsync();
                 }
             }
             catch (Exception ex)
             {
                 Program.WriteError(ex);
+                return done;
             }
         }
+        static readonly Task done = Task.FromResult(0);
 
-        internal void Connect(IPEndPoint endpoint)
+        internal async Task ConnectAsync(IPEndPoint endpoint)
         {
-            SocketAsyncEventArgs args = new SocketAsyncEventArgs();
-            args.RemoteEndPoint = endpoint;
-            args.Completed += OnCompleted;
-            if (!Socket.ConnectAsync(SocketType.Stream, ProtocolType.Tcp, args)) OnCompleted(this, args);
+            thread = new UvThread();
+            client = new UvTcpClient(thread, endpoint);
+            connection = await client.ConnectAsync();
+            Task.Run(ReadLoop).FireOrForget();
         }
-
-        private void OnCompleted(object sender, SocketAsyncEventArgs e)
+        internal async Task ReadLoop()
         {
-            if(e.SocketError != SocketError.Success)
+            while (true)
             {
-                Console.WriteLine($"[client] socket error: {e.SocketError}");
-                Dispose();
-                return;
-            }
-            switch(e.LastOperation)
-            {
-                case SocketAsyncOperation.Connect:
-                    socket = e.ConnectSocket;
-                    Console.WriteLine($"[client] connected from {socket.LocalEndPoint} to {socket.RemoteEndPoint}");
-
-                    e.RemoteEndPoint = null;
-                    e.SetBuffer(new byte[1024], 0, 1024);
-                    BeginRead(e);
+                var buffer = await connection.Output;
+                if (buffer.IsEmpty && connection.Output.Completion.IsCompleted)
+                {
+                    Console.WriteLine("[client] input ended");
                     break;
-                case SocketAsyncOperation.Receive:
-                    EndRead(e);
-                    break;
-            }
-            
-        }
+                }
 
-        private void EndRead(SocketAsyncEventArgs e)
-        {
-            var len = e.BytesTransferred;
-            if(len == 0)
-            {
-                Console.WriteLine("[client] input closed");
-                // Dispose();
-            }
-            else
-            {
+                var s = buffer.GetAsciiString();
+                buffer.Consumed();
+
                 Console.Write("[client] received: ");
-                Console.WriteLine(Encoding.ASCII.GetString(e.Buffer, 0, len));
-                BeginRead(e);
+                Console.WriteLine(s);
             }
-            
-        }
-
-        private void BeginRead(SocketAsyncEventArgs e)
-        {
-            if (!socket.ReceiveAsync(e)) EndRead(e);
         }
 
         public void Dispose()
         {
-            if (socket != null)
-            {
-                Console.Write("[client] killing socket");
-                try {
-                    socket.Shutdown(SocketShutdown.Both);
-                }
-                catch { }
-                try {
-                    socket.Dispose();
-                }
-                catch { }
-            }
-            socket = null;
+            if(connection != null) Close(connection);
+            connection = null;
+            // client.Dispose(); //
+            thread?.Dispose();
+            thread = null;
+        }
+
+        private void Close(UvTcpClientConnection connection, Exception error = null)
+        {
+            Console.WriteLine("[client] closing connection...");
+            connection.Output.CompleteReading(error);
+            connection.Input.CompleteWriting(error);
+            Console.WriteLine("[client] connection closed");
         }
     }
 }
