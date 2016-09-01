@@ -12,6 +12,7 @@ using System.Numerics;
 using Channels.Text.Primitives;
 using System.Reflection;
 using Channels;
+using Channels.Networking.Libuv;
 
 namespace SampleServer
 {
@@ -173,9 +174,10 @@ namespace SampleServer
                 WriteAssemblyVersion(typeof(Channels.Networking.Libuv.UvTcpListener));
                 WriteAssemblyVersion(typeof(ReadableBufferExtensions));
 
+                TestOpenAndCloseListener();
                 // RunBasicEchoServer();
                 // XorVector();
-                RunWebSocketServer();
+                // RunWebSocketServer();
                 CollectGarbage();
                 return 0;
             } catch(Exception ex)
@@ -183,6 +185,22 @@ namespace SampleServer
                 WriteError(ex);
                 return -1;
             }
+        }
+
+        private static void TestOpenAndCloseListener()
+        {
+            var thread = new UvThread();
+            var ep = new IPEndPoint(IPAddress.Loopback, 5003);
+            var listener = new UvTcpListener(thread, ep);
+            listener.OnConnection(_ => Console.WriteLine("Hi and bye"));
+            listener.Start();
+            Console.WriteLine("Listening...");
+            Thread.Sleep(1000);
+            Console.WriteLine("Stopping listener...");
+            listener.Stop();
+            Thread.Sleep(1000);
+            Console.WriteLine("Disposing thread...");
+            thread.Dispose();
         }
 
         private static void RunBasicEchoServer()
