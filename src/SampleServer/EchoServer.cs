@@ -96,6 +96,7 @@ namespace SampleServer
 
         public void Stop()
         {
+            CloseAllConnections();
             listener?.Stop();
             thread?.Dispose();
             listener = null;
