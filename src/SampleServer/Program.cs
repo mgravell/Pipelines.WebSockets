@@ -287,7 +287,7 @@ namespace SampleServer
                     }
                     if(writeStatus)
                     {
-                        Console.WriteLine($"clients: {ClientCount}; server connections: {server.ConnectionCount}; awaiting input: {WebSocketConnection.AwaitingInput}");
+                        Console.WriteLine($"clients: {ClientCount}; server connections: {server.ConnectionCount}");
                         writeStatus = false;
                     }
 
