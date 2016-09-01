@@ -173,9 +173,9 @@ namespace SampleServer
                 WriteAssemblyVersion(typeof(Channels.Networking.Libuv.UvTcpListener));
                 WriteAssemblyVersion(typeof(ReadableBufferExtensions));
 
-                RunBasicEchoServer();
+                //RunBasicEchoServer();
                 // XorVector();
-                // RunServer();
+                RunWebSocketServer();
                 CollectGarbage();
                 return 0;
             } catch(Exception ex)
@@ -256,7 +256,7 @@ namespace SampleServer
             }
         }
 
-        public static void RunServer()
+        public static void RunWebSocketServer()
         {
             using (var server = new MyServer())
             {

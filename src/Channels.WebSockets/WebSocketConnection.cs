@@ -24,8 +24,6 @@ namespace Channels.WebSockets
 
         public object UserState { get; set; }
 
-        internal WebSocketProtocol WebSocketProtocol { get; set; }
-
 #warning remove this logging!
         private static int awaitingInput;
         public static int AwaitingInput => Interlocked.CompareExchange(ref awaitingInput, 0, 0);

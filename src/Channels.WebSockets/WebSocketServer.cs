@@ -103,11 +103,11 @@ namespace Channels.WebSockets
                 {
                     WriteStatus("Identifying protocol...");
                     socket = GetProtocol(connection, ref request);
-                    WriteStatus($"Protocol: {socket.WebSocketProtocol.Name}");
+                    WriteStatus($"Protocol: {WebSocketProtocol.Name}");
                     WriteStatus("Authenticating...");
                     if (!await OnAuthenticateAsync(socket, ref request.Headers)) throw new InvalidOperationException("Authentication refused");
                     WriteStatus("Completing handshake...");
-                    await socket.WebSocketProtocol.CompleteHandshakeAsync(ref request, socket);
+                    await WebSocketProtocol.CompleteHandshakeAsync(ref request, socket);
                 }
                 finally
                 {
@@ -277,7 +277,6 @@ namespace Channels.WebSockets
                 }
             }
 
-            WebSocketProtocol protocol;
             if (looksGoodEnough)
             {
                 //9.   The request MUST include a header field with the name
@@ -285,14 +284,7 @@ namespace Channels.WebSockets
 
                 if (!headers.ContainsKey("Sec-WebSocket-Version"))
                 {
-                    if (headers.ContainsKey("Sec-WebSocket-Key1") && headers.ContainsKey("Sec-WebSocket-Key2"))
-                    { // smells like hixie-76/hybi-00
-                        protocol = WebSocketProtocol.Hixie76;
-                    }
-                    else
-                    {
-                        throw new NotSupportedException();
-                    }
+                    throw new NotSupportedException();
                 }
                 else
                 {
@@ -306,8 +298,7 @@ namespace Channels.WebSockets
                         case 7:
                         case 8: // these are all early drafts
                         case 13: // this is later drafts and RFC6455
-                            protocol = WebSocketProtocol.RFC6455;
-                            break;
+                            break; // looks ok
                         default:
                             // should issues a 400 "upgrade required" and specify Sec-WebSocket-Version - see 4.4
                             throw new InvalidOperationException(string.Format("Sec-WebSocket-Version {0} is not supported", version));
@@ -331,7 +322,6 @@ namespace Channels.WebSockets
             socket.Origin = headers.GetAsciiString("Origin") ?? headers.GetAsciiString("Sec-WebSocket-Origin");
             socket.Protocol = headers.GetAsciiString("Sec-WebSocket-Protocol");
             socket.RequestLine = request.Path.GetAsciiString();
-            socket.WebSocketProtocol = protocol;
             return socket;
         }
         
