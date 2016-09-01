@@ -211,7 +211,7 @@ namespace ConsoleApplication
                         Console.WriteLine($"bf: toggle {nameof(server.BufferFragments)}");
                         Console.WriteLine("frag: send fragmented message from clients");
                         Console.WriteLine("q: quit");
-                        Console.WriteLine($"clients: {ClientCount}; server connections: {server.ConnectionCount}");
+                        Console.WriteLine($"clients: {ClientCount}; server connections: {server.ConnectionCount}; awaiting input: {WebSocketConnection.AwaitingInput}");
                         writeLegend = false;
                     }
 

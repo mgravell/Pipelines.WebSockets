@@ -22,7 +22,7 @@
           "type": "platform",
           "version": "1.0.0"
         },
-        "system.net.websockets.client": "4.0.0-beta-23123"
+        "System.Net.WebSockets.Client": "4.0.0"
       },
       "imports": "dnxcore50"
     }

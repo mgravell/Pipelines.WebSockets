@@ -3,7 +3,7 @@
   "buildOptions": {
     "allowUnsafe": true,
     "keyFile": "../../tools/Key.snk",
-    "define": ["LOGGING"]
+    "define": []
   },
 
   "dependencies": {

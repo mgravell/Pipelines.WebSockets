@@ -26,11 +26,22 @@ namespace Channels.WebSockets
 
         internal WebSocketProtocol WebSocketProtocol { get; set; }
 
+        private static int awaitingInput;
+#warning remove this!
+        public static int AwaitingInput => Interlocked.CompareExchange(ref awaitingInput, 0, 0);
         internal async Task ProcessIncomingFramesAsync(WebSocketServer server)
         {
             while (!IsClosed)
             {
-                ReadableBuffer buffer = await connection.Input;
+                ReadableBuffer buffer;
+                Interlocked.Increment(ref awaitingInput);
+                try
+                {
+                    buffer = await connection.Input;
+                } finally
+                {
+                    Interlocked.Decrement(ref awaitingInput);
+                }
                 try
                 {
                     if (buffer.IsEmpty && connection.Input.Completion.IsCompleted)
@@ -150,12 +161,11 @@ namespace Channels.WebSockets
         internal void Close(Exception error = null)
         {
             isClosed = true;
-            try
-            {
-                connection.Output.CompleteWriting(error);
-                connection.Input.CompleteReading(error);
-            }
-            finally { }
+#warning remove this logging!
+            Console.WriteLine("### Closing socket...");
+            connection.Output.CompleteWriting(error);
+            connection.Input.CompleteReading(error);
+            Console.WriteLine("### Closed socket");
         }
         private void CheckCanSend()
         {
