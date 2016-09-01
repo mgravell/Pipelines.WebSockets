@@ -90,7 +90,7 @@ namespace Channels.WebSockets
             }
         }
 
-        private async void OnConnection(UvTcpServerConnection connection)
+        private async void OnConnection(UvTcpConnection connection)
         {
             WebSocketConnection socket = null;
             try
@@ -238,7 +238,7 @@ namespace Channels.WebSockets
         protected virtual Task<bool> OnAuthenticateAsync(WebSocketConnection connection, ref HttpRequestHeaders headers) => TaskResult.True;
         protected virtual Task OnHandshakeCompleteAsync(WebSocketConnection connection) => TaskResult.True;
 
-        private WebSocketConnection GetProtocol(UvTcpServerConnection connection, ref HttpRequest request)
+        private WebSocketConnection GetProtocol(UvTcpConnection connection, ref HttpRequest request)
         {
             var headers = request.Headers;
             string host = headers.GetAsciiString("Host");

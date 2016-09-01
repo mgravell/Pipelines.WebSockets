@@ -21,11 +21,11 @@ namespace SampleServer
             }
         }
 
-        private List<UvTcpServerConnection> connections = new List<UvTcpServerConnection>();
+        private List<UvTcpConnection> connections = new List<UvTcpConnection>();
 
         public int CloseAllConnections(Exception error = null)
         {
-            UvTcpServerConnection[] arr;
+            UvTcpConnection[] arr;
             lock(connections)
             {
                 arr = connections.ToArray(); // lazy
@@ -38,7 +38,7 @@ namespace SampleServer
             }
             return count;
         }
-        private async void OnConnection(UvTcpServerConnection connection)
+        private async void OnConnection(UvTcpConnection connection)
         {
             try
             {
@@ -86,7 +86,7 @@ namespace SampleServer
             }
         }
 
-        private void Close(UvTcpServerConnection connection, Exception error = null)
+        private void Close(UvTcpConnection connection, Exception error = null)
         {
             Console.WriteLine("[server] closing connection...");
             connection.Output.CompleteWriting(error);

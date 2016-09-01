@@ -10,7 +10,7 @@ namespace SampleServer
     {
         UvTcpClient client;
         UvThread thread;
-        UvTcpClientConnection connection;
+        UvTcpConnection connection;
 
         internal Task SendAsync(string line)
         {
@@ -28,7 +28,7 @@ namespace SampleServer
                 }
                 else
                 {
-                    var buffer = connection.Input.Alloc();
+                    var buffer = connection.Output.Alloc();
                     Console.WriteLine($"[client] sending {line.Length} bytes...");
                     WritableBufferExtensions.WriteAsciiString(ref buffer, line);
                     return buffer.FlushAsync();
@@ -56,8 +56,8 @@ namespace SampleServer
             {
                 while (true)
                 {
-                    var buffer = await connection.Output;
-                    if (buffer.IsEmpty && connection.Output.Completion.IsCompleted)
+                    var buffer = await connection.Input;
+                    if (buffer.IsEmpty && (connection == null || connection.Input.Completion.IsCompleted))
                     {
                         Console.WriteLine("[client] input ended");
                         break;
@@ -69,6 +69,11 @@ namespace SampleServer
                     Console.Write("[client] received: ");
                     Console.WriteLine(s);
                 }
+            }
+            catch(Exception ex)
+            {
+                Console.Write("[client] read loop exploded");
+                Program.WriteError(ex);
             }
             finally
             {
@@ -89,11 +94,11 @@ namespace SampleServer
             if (disposing) Close();
         }
 
-        private void Close(UvTcpClientConnection connection, Exception error = null)
+        private void Close(UvTcpConnection connection, Exception error = null)
         {
             Console.WriteLine("[client] closing connection...");
-            connection.Output.CompleteReading(error);
-            connection.Input.CompleteWriting(error);
+            connection.Input.CompleteReading(error);
+            connection.Output.CompleteWriting(error);
             Console.WriteLine("[client] connection closed");
         }
     }
