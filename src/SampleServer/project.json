@@ -6,9 +6,9 @@
     "allowUnsafe": true
   },
   "dependencies": {
-    "Channels": "0.1.0-beta-62",
-    "Channels.Networking.Libuv": "0.1.0-beta-62",
-    "Channels.Text.Primitives": "0.1.0-beta-62",
+    "Channels": "0.1.0-beta-79",
+    "Channels.Networking.Libuv": "0.1.0-beta-79",
+    "Channels.Text.Primitives": "0.1.0-beta-79",
     "Channels.WebSockets": {
       "target": "project",
       "version": "1.0.0-*"

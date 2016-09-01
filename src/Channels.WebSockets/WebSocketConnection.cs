@@ -26,8 +26,8 @@ namespace Channels.WebSockets
 
         internal WebSocketProtocol WebSocketProtocol { get; set; }
 
+#warning remove this logging!
         private static int awaitingInput;
-#warning remove this!
         public static int AwaitingInput => Interlocked.CompareExchange(ref awaitingInput, 0, 0);
         internal async Task ProcessIncomingFramesAsync(WebSocketServer server)
         {
@@ -35,11 +35,13 @@ namespace Channels.WebSockets
             {
                 ReadableBuffer buffer;
                 Interlocked.Increment(ref awaitingInput);
+                Console.WriteLine("Awaiting input...");
                 try
                 {
                     buffer = await connection.Input;
                 } finally
                 {
+                    Console.WriteLine("Await input returned");
                     Interlocked.Decrement(ref awaitingInput);
                 }
                 try

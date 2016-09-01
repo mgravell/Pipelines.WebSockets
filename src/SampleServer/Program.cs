@@ -9,6 +9,9 @@ using System.Threading;
 using System.Threading.Tasks;
 using System.Net.WebSockets;
 using System.Numerics;
+using Channels.Text.Primitives;
+using System.Reflection;
+using Channels;
 
 namespace ConsoleApplication
 {
@@ -159,13 +162,17 @@ namespace ConsoleApplication
                     args.SetObserved();
                     WriteError(args.Exception);
                 };
-#if DNX451
+#if NET451
                 AppDomain.CurrentDomain.UnhandledException += (sender, args) =>
                 {
                     Console.WriteLine($"{nameof(AppDomain)}.{nameof(AppDomain.UnhandledException)}");
                     WriteError(args.ExceptionObject as Exception);
                 };
 #endif
+                WriteAssemblyVersion(typeof(BufferSpan));
+                WriteAssemblyVersion(typeof(Channels.Networking.Libuv.UvTcpListener));
+                WriteAssemblyVersion(typeof(ReadableBufferExtensions));
+                
                 // XorVector();
                 RunServer();
                 CollectGarbage();
@@ -175,6 +182,25 @@ namespace ConsoleApplication
                 WriteError(ex);
                 return -1;
             }
+        }
+
+        private static void WriteAssemblyVersion(Type type)
+        {
+#if NET451
+            var assembly = type.Assembly;
+            var assemblyName = assembly.GetName();
+            var attrib = (AssemblyInformationalVersionAttribute)Attribute.GetCustomAttribute(assembly, typeof(AssemblyInformationalVersionAttribute));
+            if(attrib != null)
+            {
+                Console.WriteLine($"{assemblyName.Name}: {attrib.InformationalVersion}");
+            }
+            else
+            {
+                
+                Console.WriteLine($"{assemblyName.Name}: {assemblyName.Version}");
+            }
+            
+#endif
         }
 
         private static void CollectGarbage()
