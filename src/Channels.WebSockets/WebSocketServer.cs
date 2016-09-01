@@ -85,54 +85,56 @@ namespace Channels.WebSockets
             {
                 thread = new UvThread();
                 listener = new UvTcpListener(thread, new IPEndPoint(ip, port));
-                listener.OnConnection(async connection =>
-                {
-                    WebSocketConnection socket = null;
-                    try
-                    {
-                        WriteStatus("Connected");
-
-                        WriteStatus("Parsing http request...");
-                        var request = await ParseHttpRequest(connection.Input);
-                        try
-                        {
-                            WriteStatus("Identifying protocol...");
-                            socket = GetProtocol(connection, ref request);
-                            WriteStatus($"Protocol: {socket.WebSocketProtocol.Name}");
-                            WriteStatus("Authenticating...");
-                            if (!await OnAuthenticateAsync(socket, ref request.Headers)) throw new InvalidOperationException("Authentication refused");
-                            WriteStatus("Completing handshake...");
-                            await socket.WebSocketProtocol.CompleteHandshakeAsync(ref request, socket);
-                        }
-                        finally
-                        {
-                            request.Dispose(); // can't use "ref request" or "ref headers" otherwise
-                        }
-                        WriteStatus("Handshake complete hook...");
-                        await OnHandshakeCompleteAsync(socket);
-
-                        connections.TryAdd(socket, socket);
-                        WriteStatus("Processing incoming frames...");
-                        await socket.ProcessIncomingFramesAsync(this);
-                        WriteStatus("Exiting...");
-                        socket.Close();
-                    }
-                    catch (Exception ex)
-                    {// meh, bye bye broken connection
-                        try { socket?.Close(ex); } catch { }
-                        WriteStatus(ex.StackTrace);
-                        WriteStatus(ex.GetType().Name);
-                        WriteStatus(ex.Message);
-                    }
-                    finally
-                    {
-                        WebSocketConnection tmp;
-                        if (socket != null) connections.TryRemove(socket, out tmp);
-                        try { connection.Output.CompleteWriting(); } catch { }
-                        try { connection.Input.CompleteReading(); } catch { }
-                    }
-                });
+                listener.OnConnection(OnConnection);
                 listener.Start();
+            }
+        }
+
+        private async void OnConnection(UvTcpServerConnection connection)
+        {
+            WebSocketConnection socket = null;
+            try
+            {
+                WriteStatus("Connected");
+
+                WriteStatus("Parsing http request...");
+                var request = await ParseHttpRequest(connection.Input);
+                try
+                {
+                    WriteStatus("Identifying protocol...");
+                    socket = GetProtocol(connection, ref request);
+                    WriteStatus($"Protocol: {socket.WebSocketProtocol.Name}");
+                    WriteStatus("Authenticating...");
+                    if (!await OnAuthenticateAsync(socket, ref request.Headers)) throw new InvalidOperationException("Authentication refused");
+                    WriteStatus("Completing handshake...");
+                    await socket.WebSocketProtocol.CompleteHandshakeAsync(ref request, socket);
+                }
+                finally
+                {
+                    request.Dispose(); // can't use "ref request" or "ref headers" otherwise
+                }
+                WriteStatus("Handshake complete hook...");
+                await OnHandshakeCompleteAsync(socket);
+
+                connections.TryAdd(socket, socket);
+                WriteStatus("Processing incoming frames...");
+                await socket.ProcessIncomingFramesAsync(this);
+                WriteStatus("Exiting...");
+                socket.Close();
+            }
+            catch (Exception ex)
+            {// meh, bye bye broken connection
+                try { socket?.Close(ex); } catch { }
+                WriteStatus(ex.StackTrace);
+                WriteStatus(ex.GetType().Name);
+                WriteStatus(ex.Message);
+            }
+            finally
+            {
+                WebSocketConnection tmp;
+                if (socket != null) connections.TryRemove(socket, out tmp);
+                try { connection.Output.CompleteWriting(); } catch { }
+                try { connection.Input.CompleteReading(); } catch { }
             }
         }
 
