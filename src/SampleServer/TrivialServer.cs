@@ -82,7 +82,7 @@ namespace SampleServer
 
         private void Close(UvTcpServerConnection connection, Exception error = null)
         {
-            Console.WriteLine("[server] slosing connection...");
+            Console.WriteLine("[server] closing connection...");
             connection.Output.CompleteWriting(error);
             connection.Input.CompleteReading(error);
             Console.WriteLine("[server] connection closed");
