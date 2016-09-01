@@ -173,9 +173,9 @@ namespace SampleServer
                 WriteAssemblyVersion(typeof(Channels.Networking.Libuv.UvTcpListener));
                 WriteAssemblyVersion(typeof(ReadableBufferExtensions));
 
-                RunBasicEchoServer();
+                // RunBasicEchoServer();
                 // XorVector();
-                // RunWebSocketServer();
+                RunWebSocketServer();
                 CollectGarbage();
                 return 0;
             } catch(Exception ex)
