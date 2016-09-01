@@ -13,7 +13,7 @@ using Channels.Text.Primitives;
 using System.Reflection;
 using Channels;
 
-namespace ConsoleApplication
+namespace SampleServer
 {
     public static class Program
     {
@@ -172,15 +172,51 @@ namespace ConsoleApplication
                 WriteAssemblyVersion(typeof(BufferSpan));
                 WriteAssemblyVersion(typeof(Channels.Networking.Libuv.UvTcpListener));
                 WriteAssemblyVersion(typeof(ReadableBufferExtensions));
-                
+
+                RunBasicEchoServer();
                 // XorVector();
-                RunServer();
+                // RunServer();
                 CollectGarbage();
                 return 0;
             } catch(Exception ex)
             {
                 WriteError(ex);
                 return -1;
+            }
+        }
+
+        private static void RunBasicEchoServer()
+        {
+            using (var server = new TrivialServer())
+            using (var client = new TrivialClient())
+            {
+                var endpoint = new IPEndPoint(IPAddress.Loopback, 5002);
+                Console.WriteLine($"Starting server on {endpoint}...");
+                server.Start(endpoint);
+                Console.WriteLine($"Server running");
+
+                Thread.Sleep(1000); // let things spin up
+
+                Console.WriteLine($"Opening client to {endpoint}...");
+                client.Connect(endpoint);
+                Console.WriteLine("Client connected");
+
+                Console.WriteLine("Write data to echo, or 'kill' to shutdown the socket from the server, 'quit' to exit");
+                while (true)
+                {
+                    var line = Console.ReadLine();
+                    if (line == null || line == "quit") break;
+                    if (line == "kill")
+                    {
+                        int count = server.CloseAllConnections();
+                        Console.WriteLine($"Closed {count} connections at the server");
+                    }
+                    else
+                    {
+                        client.Send(line);
+                    }
+                }
+                server.Stop();
             }
         }
 
@@ -379,7 +415,7 @@ namespace ConsoleApplication
             Console.WriteLine($"{count} client(s) started; expected: {countBefore + count}");
         }
 
-        private static void WriteError(Exception e)
+        internal static void WriteError(Exception e)
         {
             while (e is AggregateException && e.InnerException != null)
             {
