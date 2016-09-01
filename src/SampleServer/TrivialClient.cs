@@ -12,10 +12,17 @@ namespace SampleServer
         {
             try
             {
-                var arr = Encoding.ASCII.GetBytes(line);
-                Console.WriteLine($"[client] sending {arr.Length} bytes...");
-                socket.Send(arr);
-                Console.WriteLine($"[client] sent");
+                if (socket == null)
+                {
+                    Console.WriteLine($"[client] (socket is closed; cannot send)");
+                }
+                else
+                {
+                    var arr = Encoding.ASCII.GetBytes(line);
+                    Console.WriteLine($"[client] sending {arr.Length} bytes...");
+                    socket.Send(arr);
+                    Console.WriteLine($"[client] sent");
+                }
             }
             catch (Exception ex)
             {
@@ -35,6 +42,7 @@ namespace SampleServer
         {
             if(e.SocketError != SocketError.Success)
             {
+                Console.WriteLine($"[client] socket error: {e.SocketError}");
                 Dispose();
                 return;
             }
@@ -61,6 +69,7 @@ namespace SampleServer
             if(len == 0)
             {
                 Console.WriteLine("[client] input closed");
+                // Dispose();
             }
             else
             {
@@ -78,7 +87,18 @@ namespace SampleServer
 
         public void Dispose()
         {
-            try { socket?.Dispose(); } catch { }
+            if (socket != null)
+            {
+                Console.Write("[client] killing socket");
+                try {
+                    socket.Shutdown(SocketShutdown.Both);
+                }
+                catch { }
+                try {
+                    socket.Dispose();
+                }
+                catch { }
+            }
             socket = null;
         }
     }

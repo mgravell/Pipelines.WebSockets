@@ -42,6 +42,7 @@ namespace SampleServer
         {
             try
             {
+                Console.WriteLine("[server] OnConnection entered");
                 lock(connections)
                 {
                     connections.Add(connection);
@@ -66,6 +67,7 @@ namespace SampleServer
                     var response = connection.Output.Alloc(len);
                     response.Append(ref request);
                     await response.FlushAsync();
+                    Console.WriteLine($"[server] echoed");
                     request.Consumed();
                 }
                 Close(connection);          
@@ -76,7 +78,11 @@ namespace SampleServer
             }
             finally
             {
-                connections.Remove(connection);
+                lock(connections)
+                {
+                    connections.Remove(connection);
+                }
+                Console.WriteLine("[server] OnConnection exited");
             }
         }
 
