@@ -11,6 +11,7 @@ using System.Net.WebSockets;
 using System.Numerics;
 using Channels.Text.Primitives;
 using System.Reflection;
+using System.Runtime.CompilerServices;
 using Channels;
 using Channels.Networking.Libuv;
 
@@ -44,17 +45,27 @@ namespace SampleServer
             ApplyMaskWithoutAcceleration(chunk, 0, 128, mask);
             var masked2 = BitConverter.ToString(chunk, 0, 128);
             if (masked1 == orig) throw new InvalidOperationException("unaccelerated mask unsuccessful");
-            if (masked2 != orig) throw new InvalidOperationException("unaccelerated mask unsuccessful");
+            if (masked2 != orig) throw new InvalidOperationException("unaccelerated unmask unsuccessful");
             Console.WriteLine("masked and unmasked successfully without acceleration");
 
             if (Vector.IsHardwareAccelerated)
             {
-                ApplyMaskWithAcceleration(chunk, 0, 128, mask);
-                var masked3 = BitConverter.ToString(chunk, 0, 128);
-                ApplyMaskWithAcceleration(chunk, 0, 128, mask);
-                var masked4 = BitConverter.ToString(chunk, 0, 128);
-                if (masked3 != masked1) throw new InvalidOperationException("accelerated mask unsuccessful");
-                if (masked4 != orig) throw new InvalidOperationException("accelerated mask unsuccessful");
+                var max = Vector<byte>.Count * 2;
+                for (var i = 1; i < max; i++)
+                {
+                    // Get the correct values
+                    orig = BitConverter.ToString(chunk, 0, i);
+                    ApplyMaskWithoutAcceleration(chunk, 0, max, mask);
+                    masked1 = BitConverter.ToString(chunk, 0, i);
+                    ApplyMaskWithoutAcceleration(chunk, 0, max, mask);
+                    // Try accelerated
+                    ApplyMaskWithAcceleration(chunk, 0, i, mask);
+                    var masked3 = BitConverter.ToString(chunk, 0, i);
+                    ApplyMaskWithAcceleration(chunk, 0, i, mask);
+                    var masked4 = BitConverter.ToString(chunk, 0, i);
+                    if (masked3 != masked1) throw new InvalidOperationException($"accelerated mask unsuccessful, size {i}");
+                    if (masked4 != orig) throw new InvalidOperationException($"accelerated unmask unsuccessful, size {i}");
+                }
                 Console.WriteLine("masked and unmasked successfully with acceleration");
             }
             else
@@ -111,6 +122,7 @@ namespace SampleServer
 
         private static readonly int vectorWidth = Vector<byte>.Count;
         private static readonly int vectorShift = (int)Math.Log(vectorWidth, 2);
+        private static readonly int vectorOverflow = ~(~0 << vectorShift);
 
         static unsafe void ApplyMaskWithAcceleration(byte[] data, int offset, int count, int mask)
         {
@@ -122,15 +134,65 @@ namespace SampleServer
             {
                 var dataPtr = bPtr + offset;
 
+                // Vector widths
                 for (int i = 0; i < chunks; i++)
                 {
                     var maskedVector = Unsafe.Read<Vector<byte>>(dataPtr) ^ maskVector;
                     Unsafe.Write(dataPtr, maskedVector);
                     dataPtr += vectorWidth;
                 }
-            }
 
-            // count = count - (chunks << vectorShift);
+                var remaining = count & vectorOverflow;
+
+                chunks = remaining >> 3;
+
+                // Remaing ulong widths
+                if (chunks > 0)
+                {
+                    ulong mask8 = (uint)mask;
+                    mask8 = (mask8 << 32) | mask8;
+
+                    for (int i = 0; i < chunks; i++)
+                    {
+                        *((ulong*)dataPtr) ^= mask8;
+                        dataPtr += sizeof(ulong);
+                    }
+                }
+
+                // Now there can be at most 7 bytes left
+                switch (remaining & 7)
+                {
+                    case 0:
+                        // No-op: We already finished masking all the bytes.
+                        break;
+                    case 1:
+                        *(dataPtr) = (byte) (*(dataPtr) ^ (byte) (mask & 0xff));
+                        break;
+                    case 2:
+                        *(short*) (dataPtr) = (short) (*(short*) (dataPtr) ^ (short) (mask & 0xffff));
+                        break;
+                    case 3:
+                        *(short*) (dataPtr) = (short) (*(short*) (dataPtr) ^ (short) (mask & 0xffff));
+                        *(dataPtr + 2) = (byte) (*(dataPtr + 2) ^ (byte) ((mask & 0xff0000) >> 16));
+                        break;
+                    case 4:
+                        *(int*) (dataPtr) = *(int*) (dataPtr) ^ mask;
+                        break;
+                    case 5:
+                        *(int*) (dataPtr) = *(int*) (dataPtr) ^ mask;
+                        *(dataPtr + 4) = (byte) (*(dataPtr + 4) ^ (byte) (mask & 0xff));
+                        break;
+                    case 6:
+                        *(int*) (dataPtr) = *(int*) (dataPtr) ^ mask;
+                        *(short*) (dataPtr + 4) = (short) (*(short*) (dataPtr + 4) ^ (short) (mask & 0xffff));
+                        break;
+                    case 7:
+                        *(int*) (dataPtr) = *(int*) (dataPtr) ^ mask;
+                        *(short*) (dataPtr + 4) = (short) (*(short*) (dataPtr + 4) ^ (short) (mask & 0xffff));
+                        *(dataPtr + 6) = (byte) (*(dataPtr + 6) ^ (byte) ((mask & 0xff0000) >> 16));
+                        break;
+                }
+            }
         }
         
         static unsafe void ApplyMaskWithoutAcceleration(byte[] data, int offset, int count, int mask)
