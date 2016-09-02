@@ -1,4 +1,6 @@
 ﻿using System;
+using System.Numerics;
+using System.Runtime.CompilerServices;
 
 namespace Channels.WebSockets
 {
@@ -39,6 +41,93 @@ namespace Channels.WebSockets
         }
         public bool IsMasked => (header2 & 1) != 0;
         private bool HasFlag(FrameFlags flag) => (header & (byte)flag) != 0;
+
+        private static readonly int vectorWidth = Vector<byte>.Count, vectorShift = (int)Math.Log(vectorWidth, 2), vectorOverflow = ~(~0 << vectorShift);
+
+        // COMPLETELY UNTESTED
+        /// <returns>The rotated mask</returns>
+        public static unsafe uint ApplyMask(byte[] data, int offset, int count, uint mask)
+        {
+            if (data == null) throw new ArgumentNullException();
+            if (offset < 0) throw new ArgumentOutOfRangeException(nameof(offset));
+            if (offset + count > data.Length) throw new ArgumentOutOfRangeException(nameof(count));
+            if (mask == 0) return 0; // nothing to do
+
+            fixed (byte* basePtr = data)
+            {
+                var ptr = basePtr + offset;
+                int chunks = count >> vectorShift;
+
+                if (chunks != 0)
+                {
+                    var maskVector = Vector.AsVectorByte(new Vector<uint>(mask));
+                    // Vector widths
+                    for (int i = 0; i < chunks; i++)
+                    {
+                        var maskedVector = Unsafe.Read<Vector<byte>>(ptr) ^ maskVector;
+                        Unsafe.Write(ptr, maskedVector);
+                        ptr += vectorWidth;
+                    }
+                    count &= vectorOverflow;
+                }
+
+                chunks = count >> 3;
+                // Remaing ulong widths
+                if (chunks != 0)
+                {
+                    ulong mask8 = (uint)mask;
+                    mask8 = (mask8 << 32) | mask8;
+
+                    var ptr8 = (ulong*)ptr;
+                    for (int i = 0; i < chunks; i++)
+                    {
+                        *ptr8++ ^= mask8;
+                    }
+                    ptr = (byte*)ptr8;
+                }
+
+                // Now there can be at most 7 bytes left
+                switch (count & 7)
+                {
+                    case 0:
+                        // No-op: We already finished masking all the bytes.
+                        break;
+                    case 1:
+                        *ptr = (byte)(*ptr ^ (byte)(mask & 0xff));
+                        mask = (mask >> 8) | (mask << 24);
+                        break;
+                    case 2:
+                        *(ushort*)(ptr) = (ushort)(*(short*)(ptr) ^ (ushort)(mask & 0xffff));
+                        mask = (mask >> 16) | (mask << 16);
+                        break;
+                    case 3:
+                        *(ushort*)(ptr) = (ushort)(*(ushort*)(ptr) ^ (ushort)(mask & 0xffff));
+                        *(ptr + 2) = (byte)(*(ptr + 2) ^ (byte)((mask & 0xff0000) >> 16));
+                        mask = (mask >> 24) | (mask << 8);
+                        break;
+                    case 4:
+                        *(uint*)(ptr) = *(uint*)(ptr) ^ mask;
+                        break;
+                    case 5:
+                        *(uint*)(ptr) = *(uint*)(ptr) ^ mask;
+                        *(ptr + 4) = (byte)(*(ptr + 4) ^ (byte)(mask & 0xff));
+                        mask = (mask >> 8) | (mask << 24);
+                        break;
+                    case 6:
+                        *(uint*)(ptr) = *(uint*)(ptr) ^ mask;
+                        *(ushort*)(ptr + 4) = (ushort)(*(ushort*)(ptr + 4) ^ (ushort)(mask & 0xffff));
+                        mask = (mask >> 16) | (mask << 16);
+                        break;
+                    case 7:
+                        *(uint*)(ptr) = *(uint*)(ptr) ^ mask;
+                        *(ushort*)(ptr + 4) = (ushort)(*(ushort*)(ptr + 4) ^ (ushort)(mask & 0xffff));
+                        *(ptr + 6) = (byte)(*(ptr + 6) ^ (byte)((mask & 0xff0000) >> 16));
+                        mask = (mask >> 24) | (mask << 8);
+                        break;
+                }
+            }
+            return mask;
+        }
 
         internal unsafe static void ApplyMask(ref ReadableBuffer buffer, int mask)
         {
