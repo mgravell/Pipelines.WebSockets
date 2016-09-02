@@ -46,11 +46,11 @@ namespace Channels.WebSockets
         private static readonly int vectorWidth = Vector<byte>.Count;
         private static readonly int vectorShift = (int)Math.Log(vectorWidth, 2);
         private static readonly int vectorOverflow = ~(~0 << vectorShift);
-        private static bool useVector = Vector.IsHardwareAccelerated;
+        private static int vectorEnabledMask = Vector.IsHardwareAccelerated ? ~0 : 0;
 
         public static void SetHardwareAcceleration(bool enabled)
         {
-            useVector = enabled & Vector.IsHardwareAccelerated;
+            vectorEnabledMask = (enabled & Vector.IsHardwareAccelerated) ? ~0 : 0;
         }
         public static unsafe uint ApplyMask(byte[] data, int offset, int count, uint mask)
         {
@@ -67,16 +67,16 @@ namespace Channels.WebSockets
         private static unsafe uint ApplyMask(byte* ptr, int count, uint mask)
         {
             // Vector widths
-            int chunks = count >> vectorShift;
-            if (chunks != 0 && useVector)
+            int chunks = (count >> vectorShift) & vectorEnabledMask;
+            if (chunks != 0)
             {                    
                 var maskVector = Vector.AsVectorByte(new Vector<uint>(mask));
-                for (int i = 0; i < chunks; i++)
+                do
                 {
                     var maskedVector = Unsafe.Read<Vector<byte>>(ptr) ^ maskVector;
                     Unsafe.Write(ptr, maskedVector);
                     ptr += vectorWidth;
-                }
+                } while (--chunks != 0);
                 count &= vectorOverflow;
             }
 
@@ -86,12 +86,11 @@ namespace Channels.WebSockets
             {
                 ulong mask8 = mask;
                 mask8 = (mask8 << 32) | mask8;
-
-                for (int i = 0; i < chunks; i++)
+                do
                 {
                     *((ulong*)ptr) ^= mask8;
                     ptr += sizeof(ulong);
-                }
+                } while (--chunks != 0);
             }
 
             // Now there can be at most 7 bytes left
