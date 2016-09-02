@@ -51,7 +51,7 @@ namespace Channels.WebSockets
         {
             if (data == null) throw new ArgumentNullException(nameof(data));
             if (offset < 0) throw new ArgumentOutOfRangeException(nameof(offset));
-            if (count < 0 || (offset + count) > data.Length) throw new ArgumentOutOfRangeException(nameof(offset));
+            if (count < 0 || (offset + count) > data.Length) throw new ArgumentOutOfRangeException(nameof(count));
 
             if (count == 0 || mask == 0) return mask;
             fixed (byte* ptr = data)
