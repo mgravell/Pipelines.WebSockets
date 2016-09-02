@@ -1,5 +1,5 @@
 # Channels.WebSockets
-.NET WebSocket (RFC 6455/hixie/hybi) implementation using the Channels API
+.NET WebSocket (RFC 6455) implementation using the Channels API
 
 [What  are `Channels`?](https://github.com/davidfowl/Channels/blob/master/README.md)
 
