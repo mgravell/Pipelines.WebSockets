@@ -109,35 +109,30 @@ namespace SampleServer
             if(log) Console.WriteLine($"{cycles}x{count} bytes, with acceleration: {watch.ElapsedMilliseconds}ms");
         }
 
-        [ThreadStatic]
-        private static byte[] maskArray;
+        private static readonly int vectorWidth = Vector<byte>.Count;
+        private static readonly int vectorShift = (int)Math.Log(vectorWidth, 2);
 
         static unsafe void ApplyMaskWithAcceleration(byte[] data, int offset, int count, int mask)
         {
+            var maskVector = Vector.AsVectorByte(new Vector<int>(mask));
 
-            int vectorWidth = Vector<byte>.Count;
-            var maskArr = maskArray ?? (maskArray = new byte[vectorWidth]);
-            fixed (byte* maskPtr = maskArr)
+            int chunks = count >> vectorShift;
+
+            fixed (byte* bPtr = &data[0])
             {
-                int* iPtr = (int*)maskPtr;
-                for (int i = 0; i < (maskArr.Length / 4); i++)
+                var dataPtr = bPtr + offset;
+
+                for (int i = 0; i < chunks; i++)
                 {
-                    *iPtr++ = mask;
+                    var maskedVector = Unsafe.Read<Vector<byte>>(dataPtr) ^ maskVector;
+                    Unsafe.Write(dataPtr, maskedVector);
+                    dataPtr += vectorWidth;
                 }
             }
 
-            var maskVector = new Vector<byte>(maskArr);
-
-            int chunks = count / vectorWidth;
-            for (int i = 0; i < chunks; i++)
-            {
-                var dataVector = new Vector<byte>(data, offset);
-                dataVector ^= maskVector;
-                dataVector.CopyTo(data, offset);
-                offset += vectorWidth;
-            }
-            // count = count % vectorWidth;
+            // count = count - (chunks << vectorShift);
         }
+        
         static unsafe void ApplyMaskWithoutAcceleration(byte[] data, int offset, int count, int mask)
         {
             ulong mask8 = (uint)mask;
