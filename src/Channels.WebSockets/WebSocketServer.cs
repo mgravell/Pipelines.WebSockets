@@ -24,6 +24,10 @@ namespace Channels.WebSockets
         public bool BufferFragments { get; set; }
         public bool AllowClientsMissingConnectionHeaders { get; set; } = true; // stoopid browsers
 
+        public WebSocketServer()
+        {
+            if (!BitConverter.IsLittleEndian) throw new NotSupportedException("This code has not been tested on big-engian architectures");
+        }
         public void Dispose() => Dispose(true);
         ~WebSocketServer() { Dispose(false); }
         protected virtual void Dispose(bool disposing)

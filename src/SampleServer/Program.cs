@@ -38,41 +38,6 @@ namespace SampleServer
             rand.NextBytes(chunk);
             int mask = rand.Next();
 
-            // functionality test first
-            var orig = BitConverter.ToString(chunk, 0, 128);
-            ApplyMaskWithoutAcceleration(chunk, 0, 128, mask);
-            var masked1 = BitConverter.ToString(chunk, 0, 128);
-            ApplyMaskWithoutAcceleration(chunk, 0, 128, mask);
-            var masked2 = BitConverter.ToString(chunk, 0, 128);
-            if (masked1 == orig) throw new InvalidOperationException("unaccelerated mask unsuccessful");
-            if (masked2 != orig) throw new InvalidOperationException("unaccelerated unmask unsuccessful");
-            Console.WriteLine("masked and unmasked successfully without acceleration");
-
-            if (Vector.IsHardwareAccelerated)
-            {
-                var max = Vector<byte>.Count * 2;
-                for (var i = 1; i < max; i++)
-                {
-                    // Get the correct values
-                    orig = BitConverter.ToString(chunk, 0, i);
-                    ApplyMaskWithoutAcceleration(chunk, 0, max, mask);
-                    masked1 = BitConverter.ToString(chunk, 0, i);
-                    ApplyMaskWithoutAcceleration(chunk, 0, max, mask);
-                    // Try accelerated
-                    ApplyMaskWithAcceleration(chunk, 0, i, mask);
-                    var masked3 = BitConverter.ToString(chunk, 0, i);
-                    ApplyMaskWithAcceleration(chunk, 0, i, mask);
-                    var masked4 = BitConverter.ToString(chunk, 0, i);
-                    if (masked3 != masked1) throw new InvalidOperationException($"accelerated mask unsuccessful, size {i}");
-                    if (masked4 != orig) throw new InvalidOperationException($"accelerated unmask unsuccessful, size {i}");
-                }
-                Console.WriteLine("masked and unmasked successfully with acceleration");
-            }
-            else
-            {
-                Console.WriteLine("acceleration not available");
-            }
-
             const int Cycles = 10000000;
 
             PerformanceTest(chunk, 0, Vector<byte>.Count, mask, Cycles, false); // dry run for JIT etc
@@ -91,125 +56,31 @@ namespace SampleServer
         }
         static void PerformanceTest(byte[] chunk, int offset, int count, int mask, int cycles, bool log = true)
         {
-            PerformanceTestWithoutAcceleration(chunk, offset, count, mask, cycles, log);
+            PerformanceTest(false, chunk, offset, count, mask, cycles, log);
             if (Vector.IsHardwareAccelerated)
             {
-                PerformanceTestWithAcceleration(chunk, offset, count, mask, cycles, log);
+                PerformanceTest(true, chunk, offset, count, mask, cycles, log);
             }
         }
-        static void PerformanceTestWithoutAcceleration(byte[] chunk, int offset, int count, int mask, int cycles, bool log)
+        static void PerformanceTest(bool accelerated, byte[] chunk, int offset, int count, int mask, int cycles, bool log)
         {
             CollectGarbage();
+            WebSocketsFrame.SetHardwareAcceleration(accelerated);
             var watch = Stopwatch.StartNew();
-            for(int i = 1; i < cycles; i++)
+            for(int i = 0; i < cycles; i++)
             {
-                ApplyMaskWithoutAcceleration(chunk, offset, count, mask);
+                WebSocketsFrame.ApplyMask(chunk, offset, count, (uint)mask);
             }
             watch.Stop();
-            if(log) Console.WriteLine($"{cycles}x{count} bytes, no acceleration: {watch.ElapsedMilliseconds}ms");            
-        }
-        static void PerformanceTestWithAcceleration(byte[] chunk, int offset, int count, int mask, int cycles, bool log)
-        {
-            CollectGarbage();
-            var watch = Stopwatch.StartNew();
-            for (int i = 1; i < cycles; i++)
-            {
-                ApplyMaskWithAcceleration(chunk, offset, count, mask);
-            }
-            watch.Stop();
-            if(log) Console.WriteLine($"{cycles}x{count} bytes, with acceleration: {watch.ElapsedMilliseconds}ms");
+            if(log) Console.WriteLine($"{cycles}x{count} bytes, SIMD enabled: {accelerated}, {watch.ElapsedMilliseconds}ms");
+            WebSocketsFrame.SetHardwareAcceleration(true);
         }
 
         private static readonly int vectorWidth = Vector<byte>.Count;
         private static readonly int vectorShift = (int)Math.Log(vectorWidth, 2);
         private static readonly int vectorOverflow = ~(~0 << vectorShift);
 
-        static unsafe void ApplyMaskWithAcceleration(byte[] data, int offset, int count, int mask)
-        {
-            var maskVector = Vector.AsVectorByte(new Vector<int>(mask));
-
-            int chunks = count >> vectorShift;
-
-            fixed (byte* bPtr = &data[0])
-            {
-                var dataPtr = bPtr + offset;
-
-                // Vector widths
-                for (int i = 0; i < chunks; i++)
-                {
-                    var maskedVector = Unsafe.Read<Vector<byte>>(dataPtr) ^ maskVector;
-                    Unsafe.Write(dataPtr, maskedVector);
-                    dataPtr += vectorWidth;
-                }
-
-                var remaining = count & vectorOverflow;
-
-                chunks = remaining >> 3;
-
-                // Remaing ulong widths
-                if (chunks > 0)
-                {
-                    ulong mask8 = (uint)mask;
-                    mask8 = (mask8 << 32) | mask8;
-
-                    for (int i = 0; i < chunks; i++)
-                    {
-                        *((ulong*)dataPtr) ^= mask8;
-                        dataPtr += sizeof(ulong);
-                    }
-                }
-
-                // Now there can be at most 7 bytes left
-                switch (remaining & 7)
-                {
-                    case 0:
-                        // No-op: We already finished masking all the bytes.
-                        break;
-                    case 1:
-                        *(dataPtr) = (byte) (*(dataPtr) ^ (byte) (mask & 0xff));
-                        break;
-                    case 2:
-                        *(short*) (dataPtr) = (short) (*(short*) (dataPtr) ^ (short) (mask & 0xffff));
-                        break;
-                    case 3:
-                        *(short*) (dataPtr) = (short) (*(short*) (dataPtr) ^ (short) (mask & 0xffff));
-                        *(dataPtr + 2) = (byte) (*(dataPtr + 2) ^ (byte) ((mask & 0xff0000) >> 16));
-                        break;
-                    case 4:
-                        *(int*) (dataPtr) = *(int*) (dataPtr) ^ mask;
-                        break;
-                    case 5:
-                        *(int*) (dataPtr) = *(int*) (dataPtr) ^ mask;
-                        *(dataPtr + 4) = (byte) (*(dataPtr + 4) ^ (byte) (mask & 0xff));
-                        break;
-                    case 6:
-                        *(int*) (dataPtr) = *(int*) (dataPtr) ^ mask;
-                        *(short*) (dataPtr + 4) = (short) (*(short*) (dataPtr + 4) ^ (short) (mask & 0xffff));
-                        break;
-                    case 7:
-                        *(int*) (dataPtr) = *(int*) (dataPtr) ^ mask;
-                        *(short*) (dataPtr + 4) = (short) (*(short*) (dataPtr + 4) ^ (short) (mask & 0xffff));
-                        *(dataPtr + 6) = (byte) (*(dataPtr + 6) ^ (byte) ((mask & 0xff0000) >> 16));
-                        break;
-                }
-            }
-        }
-        
-        static unsafe void ApplyMaskWithoutAcceleration(byte[] data, int offset, int count, int mask)
-        {
-            ulong mask8 = (uint)mask;
-            mask8 = (mask8 << 32) | mask8;
-
-            int chunks = count >> 3;
-            fixed (byte* ptr = data)
-            {
-                var ptr8 = (ulong*)(ptr + offset);
-                for (int i = 0; i < chunks; i++)
-                {
-                    (*ptr8++) ^= mask8;
-                }
-            }
-        }
+       
         static int Main()
         {
             try
@@ -231,10 +102,10 @@ namespace SampleServer
                 WriteAssemblyVersion(typeof(Channels.Networking.Libuv.UvTcpListener));
                 WriteAssemblyVersion(typeof(ReadableBufferExtensions));
 
-                TestOpenAndCloseListener();
+                // TestOpenAndCloseListener();
                 // RunBasicEchoServer();
                 // XorVector();
-                // RunWebSocketServer();
+                RunWebSocketServer();
                 CollectGarbage();
                 return 0;
             } catch(Exception ex)
@@ -472,11 +343,15 @@ namespace SampleServer
                             });
                             break;
                         default:
-                            var match = Regex.Match(line, "c ([0-9]+)");
+                            Match match;
                             int i;
-                            if (match.Success && int.TryParse(match.Groups[1].Value, out i) && i.ToString() == match.Groups[1].Value && i >= 1)
+                            if ((match = Regex.Match(line, "c ([0-9]+)")).Success && int.TryParse(match.Groups[1].Value, out i) && i.ToString() == match.Groups[1].Value && i >= 1)
                             {
                                 StartClients(cancel.Token, i);
+                            }
+                            if ((match = Regex.Match(line, "s ([0-9]+)")).Success && int.TryParse(match.Groups[1].Value, out i) && i.ToString() == match.Groups[1].Value && i >= 1)
+                            {
+                                SendFromClients(cancel.Token, new string('#', i)).FireOrForget();
                             }
                             else
                             {
@@ -531,7 +406,7 @@ namespace SampleServer
             }
         }
         private static readonly Encoding encoding = Encoding.UTF8;
-        private static async Task<int> SendFromClients(CancellationToken cancel)
+        private static async Task<int> SendFromClients(CancellationToken cancel, string message = null)
         {
             ClientWebSocketWithIdentity[] arr;
             lock (clients)
@@ -541,7 +416,7 @@ namespace SampleServer
             int count = 0;
             foreach (var client in arr)
             {
-                var msg = encoding.GetBytes($"Hello from client {client.Id}");
+                var msg = encoding.GetBytes(message ?? $"Hello from client {client.Id}");
                 try
                 {
                     await client.Socket.SendAsync(new ArraySegment<byte>(msg, 0, msg.Length), WebSocketMessageType.Text, true, cancel);
