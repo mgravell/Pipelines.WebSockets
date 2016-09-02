@@ -350,7 +350,7 @@ namespace Channels.WebSockets
                 bool needMoreData = true;
                 while (needMoreData)
                 {
-                    var buffer = await _input;
+                    var buffer = await _input.ReadAsync();
 
                     var consumed = buffer.Start;
                     needMoreData = true;

@@ -54,7 +54,7 @@ namespace SampleServer
                     Console.WriteLine("[server] awaiting input...");
                     try
                     {
-                        request = await connection.Input;
+                        request = await connection.Input.ReadAsync();
                     }
                     finally
                     {

@@ -56,7 +56,7 @@ namespace SampleServer
             {
                 while (true)
                 {
-                    var buffer = await connection.Input;
+                    var buffer = await connection.Input.ReadAsync();
                     if (buffer.IsEmpty && (connection == null || connection.Input.Completion.IsCompleted))
                     {
                         Console.WriteLine("[client] input ended");

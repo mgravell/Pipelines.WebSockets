@@ -27,7 +27,7 @@ namespace Channels.WebSockets
         {
             while (!IsClosed)
             {
-                var buffer = await connection.Input;
+                var buffer = await connection.Input.ReadAsync();
                 try
                 {
                     if (buffer.IsEmpty && connection.Input.Completion.IsCompleted)

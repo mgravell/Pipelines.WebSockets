@@ -6,13 +6,13 @@
     "allowUnsafe": true
   },
   "dependencies": {
-    "Channels": "0.1.0-beta-94",
-    "Channels.Networking.Libuv": "0.1.0-beta-94",
-    "Channels.Text.Primitives": "0.1.0-beta-94",
+    "Channels": "0.1.0-beta-106",
+    "Channels.Networking.Libuv": "0.1.0-beta-106",
+    "Channels.Text.Primitives": "0.1.0-beta-106",
     "Channels.WebSockets": {
       "target": "project",
       "version": "1.0.0-*"
-    }    
+    }
   },
   "frameworks": {
     "net451": {},
