@@ -31,55 +31,6 @@ namespace SampleServer
             }
         }
         static bool logging = true;
-        static void XorVector()
-        {
-            Random rand = new Random(12345);
-            byte[] chunk = new byte[16384];
-            rand.NextBytes(chunk);
-            int mask = rand.Next();
-
-            const int Cycles = 10000000;
-
-            PerformanceTest(chunk, 0, Vector<byte>.Count, mask, Cycles, false); // dry run for JIT etc
-            PerformanceTest(chunk, 0, Vector<byte>.Count, mask, Cycles);
-            PerformanceTest(chunk, 0, 128, mask, Cycles);
-            PerformanceTest(chunk, 0, 192, mask, Cycles);
-            PerformanceTest(chunk, 0, 256, mask, Cycles); // around the sweet spot
-            PerformanceTest(chunk, 0, 320, mask, Cycles);
-            PerformanceTest(chunk, 0, 384, mask, Cycles);
-            PerformanceTest(chunk, 0, 448, mask, Cycles);
-            PerformanceTest(chunk, 0, 512, mask, Cycles);
-            PerformanceTest(chunk, 0, 1024, mask, Cycles);
-            PerformanceTest(chunk, 0, 2048, mask, Cycles);
-            PerformanceTest(chunk, 0, 16384, mask, Cycles);
-
-        }
-        static void PerformanceTest(byte[] chunk, int offset, int count, int mask, int cycles, bool log = true)
-        {
-            PerformanceTest(false, chunk, offset, count, mask, cycles, log);
-            if (Vector.IsHardwareAccelerated)
-            {
-                PerformanceTest(true, chunk, offset, count, mask, cycles, log);
-            }
-        }
-        static void PerformanceTest(bool accelerated, byte[] chunk, int offset, int count, int mask, int cycles, bool log)
-        {
-            CollectGarbage();
-            WebSocketsFrame.SetHardwareAcceleration(accelerated);
-            var watch = Stopwatch.StartNew();
-            for(int i = 0; i < cycles; i++)
-            {
-                WebSocketsFrame.ApplyMask(chunk, offset, count, (uint)mask);
-            }
-            watch.Stop();
-            if(log) Console.WriteLine($"{cycles}x{count} bytes, SIMD enabled: {accelerated}, {watch.ElapsedMilliseconds}ms");
-            WebSocketsFrame.SetHardwareAcceleration(true);
-        }
-
-        private static readonly int vectorWidth = Vector<byte>.Count;
-        private static readonly int vectorShift = (int)Math.Log(vectorWidth, 2);
-        private static readonly int vectorOverflow = ~(~0 << vectorShift);
-
        
         static int Main()
         {
@@ -104,7 +55,6 @@ namespace SampleServer
 
                 // TestOpenAndCloseListener();
                 // RunBasicEchoServer();
-                // XorVector();
                 RunWebSocketServer();
                 CollectGarbage();
                 return 0;

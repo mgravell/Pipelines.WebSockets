@@ -46,12 +46,7 @@ namespace Channels.WebSockets
         private static readonly int vectorWidth = Vector<byte>.Count;
         private static readonly int vectorShift = (int)Math.Log(vectorWidth, 2);
         private static readonly int vectorOverflow = ~(~0 << vectorShift);
-        private static int vectorEnabledMask = Vector.IsHardwareAccelerated ? ~0 : 0;
-
-        public static void SetHardwareAcceleration(bool enabled)
-        {
-            vectorEnabledMask = (enabled & Vector.IsHardwareAccelerated) ? ~0 : 0;
-        }
+        private static readonly bool isHardwareAccelerated = Vector.IsHardwareAccelerated;
         public static unsafe uint ApplyMask(byte[] data, int offset, int count, uint mask)
         {
             if (data == null) throw new ArgumentNullException(nameof(data));
@@ -66,18 +61,23 @@ namespace Channels.WebSockets
         }
         private static unsafe uint ApplyMask(byte* ptr, int count, uint mask)
         {
+            int chunks;
+
             // Vector widths
-            int chunks = (count >> vectorShift) & vectorEnabledMask;
-            if (chunks != 0)
-            {                    
-                var maskVector = Vector.AsVectorByte(new Vector<uint>(mask));
-                do
+            if (isHardwareAccelerated)
+            {
+                chunks = count >> vectorShift;
+                if (chunks != 0)
                 {
-                    var maskedVector = Unsafe.Read<Vector<byte>>(ptr) ^ maskVector;
-                    Unsafe.Write(ptr, maskedVector);
-                    ptr += vectorWidth;
-                } while (--chunks != 0);
-                count &= vectorOverflow;
+                    var maskVector = Vector.AsVectorByte(new Vector<uint>(mask));
+                    do
+                    {
+                        var maskedVector = Unsafe.Read<Vector<byte>>(ptr) ^ maskVector;
+                        Unsafe.Write(ptr, maskedVector);
+                        ptr += vectorWidth;
+                    } while (--chunks != 0);
+                    count &= vectorOverflow;
+                }
             }
 
             // qword widths
