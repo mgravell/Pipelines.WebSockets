@@ -52,80 +52,86 @@ namespace Channels.WebSockets
         {
             useVector = enabled & Vector.IsHardwareAccelerated;
         }
-
         public static unsafe uint ApplyMask(byte[] data, int offset, int count, uint mask)
         {
-            fixed (byte* basePtr = data)
+            if (data == null) throw new ArgumentNullException(nameof(data));
+            if (offset < 0) throw new ArgumentOutOfRangeException(nameof(offset));
+            if (count < 0 || (offset + count) > data.Length) throw new ArgumentOutOfRangeException(nameof(offset));
+
+            if (count == 0 || mask == 0) return mask;
+            fixed (byte* ptr = data)
             {
-                var ptr = basePtr + offset;
-
-                // Vector widths
-                int chunks = count >> vectorShift;
-                if (chunks != 0 && useVector)
-                {                    
-                    var maskVector = Vector.AsVectorByte(new Vector<uint>(mask));
-                    for (int i = 0; i < chunks; i++)
-                    {
-                        var maskedVector = Unsafe.Read<Vector<byte>>(ptr) ^ maskVector;
-                        Unsafe.Write(ptr, maskedVector);
-                        ptr += vectorWidth;
-                    }
-                    count &= vectorOverflow;
-                }
-
-                // qword widths
-                chunks = count >> 3;
-                if (chunks != 0)
+                return ApplyMask(ptr + offset, count, mask);
+            }
+        }
+        private static unsafe uint ApplyMask(byte* ptr, int count, uint mask)
+        {
+            // Vector widths
+            int chunks = count >> vectorShift;
+            if (chunks != 0 && useVector)
+            {                    
+                var maskVector = Vector.AsVectorByte(new Vector<uint>(mask));
+                for (int i = 0; i < chunks; i++)
                 {
-                    ulong mask8 = mask;
-                    mask8 = (mask8 << 32) | mask8;
-
-                    for (int i = 0; i < chunks; i++)
-                    {
-                        *((ulong*)ptr) ^= mask8;
-                        ptr += sizeof(ulong);
-                    }
+                    var maskedVector = Unsafe.Read<Vector<byte>>(ptr) ^ maskVector;
+                    Unsafe.Write(ptr, maskedVector);
+                    ptr += vectorWidth;
                 }
+                count &= vectorOverflow;
+            }
 
-                // Now there can be at most 7 bytes left
-                switch (count & 7)
+            // qword widths
+            chunks = count >> 3;
+            if (chunks != 0)
+            {
+                ulong mask8 = mask;
+                mask8 = (mask8 << 32) | mask8;
+
+                for (int i = 0; i < chunks; i++)
                 {
-                    case 0:
-                        // No-op: We already finished masking all the bytes.
-                        break;
-                    case 1:
-                        *(ptr) = (byte)(*(ptr) ^ (byte)(mask));
-                        mask = (mask >> 8) | (mask << 24);
-                        break;
-                    case 2:
-                        *(ushort*)(ptr) = (ushort)(*(ushort*)(ptr) ^ (ushort)(mask));
-                        mask = (mask >> 16) | (mask << 16);
-                        break;
-                    case 3:
-                        *(ushort*)(ptr) = (ushort)(*(ushort*)(ptr) ^ (ushort)(mask));
-                        *(ptr + 2) = (byte)(*(ptr + 2) ^ (byte)(mask >> 16));
-                        mask = (mask >> 24) | (mask << 8);
-                        break;
-                    case 4:
-                        *(uint*)(ptr) = *(uint*)(ptr) ^ mask;
-                        break;
-                    case 5:
-                        *(uint*)(ptr) = *(uint*)(ptr) ^ mask;
-                        *(ptr + 4) = (byte)(*(ptr + 4) ^ (byte)(mask));
-                        mask = (mask >> 8) | (mask << 24);
-                        break;
-                    case 6:
-                        *(uint*)(ptr) = *(uint*)(ptr) ^ mask;
-                        *(ushort*)(ptr + 4) = (ushort)(*(ushort*)(ptr + 4) ^ (ushort)(mask));
-                        mask = (mask >> 16) | (mask << 16);
-                        break;
-                    case 7:
-                        *(uint*)(ptr) = *(uint*)(ptr) ^ mask;
-                        *(ushort*)(ptr + 4) = (ushort)(*(ushort*)(ptr + 4) ^ (ushort)(mask));
-                        *(ptr + 6) = (byte)(*(ptr + 6) ^ (byte)(mask >> 16));
-                        mask = (mask >> 24) | (mask << 8);
-                        break;
+                    *((ulong*)ptr) ^= mask8;
+                    ptr += sizeof(ulong);
                 }
+            }
+
+            // Now there can be at most 7 bytes left
+            switch (count & 7)
+            {
+                case 0:
+                    // No-op: We already finished masking all the bytes.
+                    break;
+                case 1:
+                    *(ptr) = (byte)(*(ptr) ^ (byte)(mask));
+                    mask = (mask >> 8) | (mask << 24);
+                    break;
+                case 2:
+                    *(ushort*)(ptr) = (ushort)(*(ushort*)(ptr) ^ (ushort)(mask));
+                    mask = (mask >> 16) | (mask << 16);
+                    break;
+                case 3:
+                    *(ushort*)(ptr) = (ushort)(*(ushort*)(ptr) ^ (ushort)(mask));
+                    *(ptr + 2) = (byte)(*(ptr + 2) ^ (byte)(mask >> 16));
+                    mask = (mask >> 24) | (mask << 8);
+                    break;
+                case 4:
+                    *(uint*)(ptr) = *(uint*)(ptr) ^ mask;
+                    break;
+                case 5:
+                    *(uint*)(ptr) = *(uint*)(ptr) ^ mask;
+                    *(ptr + 4) = (byte)(*(ptr + 4) ^ (byte)(mask));
+                    mask = (mask >> 8) | (mask << 24);
+                    break;
+                case 6:
+                    *(uint*)(ptr) = *(uint*)(ptr) ^ mask;
+                    *(ushort*)(ptr + 4) = (ushort)(*(ushort*)(ptr + 4) ^ (ushort)(mask));
+                    mask = (mask >> 16) | (mask << 16);
+                    break;
+                case 7:
+                    *(uint*)(ptr) = *(uint*)(ptr) ^ mask;
+                    *(ushort*)(ptr + 4) = (ushort)(*(ushort*)(ptr + 4) ^ (ushort)(mask));
+                    *(ptr + 6) = (byte)(*(ptr + 6) ^ (byte)(mask >> 16));
+                    mask = (mask >> 24) | (mask << 8);
+                    break;
             }
             return mask;
         }
@@ -137,7 +143,7 @@ namespace Channels.WebSockets
             uint m = (uint)mask;
             foreach(var span in buffer)
             {
-                m = ApplyMask(span.Array, span.Offset, span.Length, m);
+                m = ApplyMask((byte*)span.BufferPtr, span.Length, m);
             }
         }
 
