@@ -49,8 +49,8 @@ namespace SampleServer
                     WriteError(args.ExceptionObject as Exception);
                 };
 #endif
-                WriteAssemblyVersion(typeof(BufferSpan));
-                WriteAssemblyVersion(typeof(Channels.Networking.Libuv.UvTcpListener));
+                WriteAssemblyVersion(typeof(ReadableBuffer));
+                WriteAssemblyVersion(typeof(UvTcpListener));
                 WriteAssemblyVersion(typeof(ReadableBufferExtensions));
 
                 // TestOpenAndCloseListener();

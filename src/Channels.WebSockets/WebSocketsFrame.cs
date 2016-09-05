@@ -142,7 +142,7 @@ namespace Channels.WebSockets
             uint m = (uint)mask;
             foreach(var span in buffer)
             {
-                m = ApplyMask((byte*)span.BufferPtr, span.Length, m);
+                m = ApplyMask((byte*)span.UnsafePointer, span.Length, m);
             }
         }
 

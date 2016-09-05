@@ -63,7 +63,7 @@ namespace Channels.WebSockets
         private static readonly Encoding Utf8Encoding = Encoding.UTF8;
         private static Decoder Utf8Decoder;
 
-        private static string GetText(List<ReadableBuffer> buffers)
+        private static unsafe string GetText(List<ReadableBuffer> buffers)
         {
             // try to re-use a shared decoder; note that in heavy usage, we might need to allocate another
             var decoder = (Decoder)Interlocked.Exchange<Decoder>(ref Utf8Decoder, null);
@@ -73,30 +73,32 @@ namespace Channels.WebSockets
             var length = 0;
             foreach (var buffer in buffers) length += buffer.Length;
 
-            var charLength = length; // worst case is 1 byte per char
-            var chars = new char[charLength];
+            var capacity = length; // worst case is 1 byte per char
+            var chars = new char[capacity];
             var charIndex = 0;
 
             int bytesUsed = 0;
             int charsUsed = 0;
             bool completed;
-            foreach (var buffer in buffers)
+            fixed (char* c = chars)
             {
-                foreach (var span in buffer)
+                foreach (var buffer in buffers)
                 {
-                    decoder.Convert(
-                        span.Array,
-                        span.Offset,
-                        span.Length,
-                        chars,
-                        charIndex,
-                        charLength - charIndex,
-                        false, // a single character could span two spans
-                        out bytesUsed,
-                        out charsUsed,
-                        out completed);
+                    foreach (var span in buffer)
+                    {
+                        decoder.Convert(
+                            (byte*)span.UnsafePointer,
+                            span.Length,
+                            c + charIndex,
+                            capacity,
+                            false, // a single character could span two spans
+                            out bytesUsed,
+                            out charsUsed,
+                            out completed);
 
-                    charIndex += charsUsed;
+                        charIndex += charsUsed;
+                        capacity -= charsUsed;
+                    }
                 }
             }
             // make the decoder available for re-use

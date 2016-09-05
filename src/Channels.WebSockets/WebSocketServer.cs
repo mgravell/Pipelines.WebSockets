@@ -553,7 +553,7 @@ namespace Channels.WebSockets
             fixed (char* valuePtr = valueLowerCase)
                 foreach (var span in bufferUnknownCase)
                 {
-                    byte* bufferPtr = (byte*)span.BufferPtr;
+                    byte* bufferPtr = (byte*)span.UnsafePointer;
                     for (int i = 0; i < span.Length; i++)
                     {
                         char x = (char)(*bufferPtr++), y = valuePtr[index++];

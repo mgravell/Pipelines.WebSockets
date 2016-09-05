@@ -31,7 +31,7 @@ namespace Channels.WebSockets
 
 
             var memory = buffer.Memory;
-            byte* dest = (byte*)memory.BufferPtr;
+            byte* dest = (byte*)memory.UnsafePointer;
             int actual;
             fixed (char* chars = value)
             {

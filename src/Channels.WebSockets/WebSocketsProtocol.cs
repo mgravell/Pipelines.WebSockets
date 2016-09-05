@@ -26,7 +26,7 @@ namespace Channels.WebSockets
 
             var buffer = connection.Output.Alloc(StandardPrefixBytes.Length +
                 ResponseTokenLength + StandardPostfixBytes.Length);
-            string hashBase64 = ComputeReply(key, buffer.Memory);
+            string hashBase64 = ComputeReply(key);
             if (hashBase64.Length != ResponseTokenLength) throw new InvalidOperationException("Unexpected response key length");
             WebSocketServer.WriteStatus($"Response token: {hashBase64}");
 
@@ -47,7 +47,7 @@ namespace Channels.WebSockets
                 || (value == (byte)'+')
                 || (value == (byte)'=');
         }
-        internal static string ComputeReply(ReadableBuffer key, BufferSpan buffer)
+        internal static string ComputeReply(ReadableBuffer key)
         {
             //To prove that the handshake was received, the server has to take two
             //pieces of information and combine them to form a response.  The first
@@ -67,26 +67,19 @@ namespace Channels.WebSockets
             //handshake.
 
             const int ExpectedKeyLength = 24;
+            if (key.Length != ExpectedKeyLength) throw new ArgumentException("Invalid key length", nameof(key));
 
-            key = ReadableBufferExtensions.TrimStart(key);
-            int len = key.Length, baseOffset = buffer.Offset;
-            if (len != ExpectedKeyLength) throw new ArgumentException("Invalid key length", nameof(key));
-
-            if (buffer.Length < (ExpectedKeyLength + WebSocketKeySuffixBytes.Length))
-                throw new ArgumentException("Insufficient buffer space", nameof(buffer));
-
-            // use the output buffer as a scratch pad to compute the hash
-            byte[] arr = buffer.Array;
-            key.CopyTo(arr, baseOffset);
+            byte[] arr = new byte[ExpectedKeyLength + WebSocketKeySuffixBytes.Length];
+            key.CopyTo(arr, 0);
             Buffer.BlockCopy( // append the magic number from RFC6455
                 WebSocketKeySuffixBytes, 0,
-                arr, baseOffset + ExpectedKeyLength,
+                arr, ExpectedKeyLength,
                 WebSocketKeySuffixBytes.Length);
 
             // compute the hash
             using (var sha = SHA1.Create())
             {
-                var hash = sha.ComputeHash(arr, baseOffset,
+                var hash = sha.ComputeHash(arr, 0,
                     ExpectedKeyLength + WebSocketKeySuffixBytes.Length);
                 return Convert.ToBase64String(hash);
             }
@@ -96,7 +89,7 @@ namespace Channels.WebSockets
 
         internal static unsafe void WriteFrameHeader(ref WritableBuffer output, WebSocketsFrame.FrameFlags flags, WebSocketsFrame.OpCodes opCode, int payloadLength, int mask)
         {
-            byte* buffer = (byte*)output.Memory.BufferPtr;
+            byte* buffer = (byte*)output.Memory.UnsafePointer;
 
             int bytesWritten;
             *buffer++ = (byte)(((int)flags & 240) | ((int)opCode & 15));
@@ -148,7 +141,7 @@ namespace Channels.WebSockets
             var span = buffer.FirstSpan;
             if (buffer.IsSingleSpan || span.Length >= MaxHeaderLength)
             {
-                return TryReadFrameHeader(span.Length, (byte*)span.BufferPtr, ref buffer, out frame);
+                return TryReadFrameHeader(span.Length, (byte*)span.UnsafePointer, ref buffer, out frame);
             }
             else
             {
