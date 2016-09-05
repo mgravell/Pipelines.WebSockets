@@ -1,4 +1,5 @@
 ﻿using Channels.Text.Primitives;
+using System;
 using System.Collections.Generic;
 using System.Text;
 using System.Threading;
@@ -80,25 +81,29 @@ namespace Channels.WebSockets
             int bytesUsed = 0;
             int charsUsed = 0;
             bool completed;
-            fixed (char* c = chars)
+            foreach (var buffer in buffers)
             {
-                foreach (var buffer in buffers)
+                foreach (var span in buffer)
                 {
-                    foreach (var span in buffer)
+                    ArraySegment<byte> segment;
+                    if(!span.TryGetArray(default(void*), out segment))
                     {
-                        decoder.Convert(
-                            (byte*)span.UnsafePointer,
-                            span.Length,
-                            c + charIndex,
-                            capacity,
-                            false, // a single character could span two spans
-                            out bytesUsed,
-                            out charsUsed,
-                            out completed);
-
-                        charIndex += charsUsed;
-                        capacity -= charsUsed;
+                        throw new InvalidOperationException("Array not available for span");
                     }
+                    decoder.Convert(
+                        segment.Array,
+                        segment.Offset,
+                        segment.Count,
+                        chars,
+                        charIndex,
+                        capacity,
+                        false, // a single character could span two spans
+                        out bytesUsed,
+                        out charsUsed,
+                        out completed);
+
+                    charIndex += charsUsed;
+                    capacity -= charsUsed;
                 }
             }
             // make the decoder available for re-use
