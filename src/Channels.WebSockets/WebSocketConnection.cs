@@ -10,9 +10,9 @@ namespace Channels.WebSockets
     {
 
 
-        private UvTcpConnection connection;
-        internal UvTcpConnection Connection => connection;
-        internal WebSocketConnection(UvTcpConnection connection)
+        private IChannel connection;
+        internal IChannel Connection => connection;
+        internal WebSocketConnection(IChannel connection)
         {
             this.connection = connection;
         }

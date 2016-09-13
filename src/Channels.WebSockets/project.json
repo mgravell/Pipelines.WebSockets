@@ -7,8 +7,9 @@
   },
 
   "dependencies": {
-    "Channels":"0.2.0-beta-*",
+    "Channels": "0.2.0-beta-*",
     "Channels.Networking.Libuv": "0.2.0-beta-*",
+    "Channels.Networking.Sockets": "0.2.0-beta-*",
     "Channels.Text.Primitives": "0.2.0-beta-*",
     "NETStandard.Library": "1.6.0",
     "System.Numerics.Vectors": "4.1.1",
@@ -16,7 +17,7 @@
   },
 
   "frameworks": {
-    "net451": { "buildOptions": { "define": [ "VOLATILE_READ", "ENCODING_POINTER_API" ] } },
+    // "net451": { "buildOptions": { "define": [ "VOLATILE_READ", "ENCODING_POINTER_API" ] } },
     "netstandard1.3": {
       "dependencies": {
         "System.Threading.Overlapped": "4.0.1"

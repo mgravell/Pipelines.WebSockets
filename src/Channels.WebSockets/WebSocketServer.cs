@@ -1,4 +1,5 @@
 ﻿using Channels.Networking.Libuv;
+using Channels.Networking.Sockets;
 using Channels.Text.Primitives;
 using System;
 using System.Collections.Concurrent;
@@ -15,7 +16,8 @@ namespace Channels.WebSockets
     {
         private UvTcpListener uvListener;
         private UvThread uvThread;
-        
+        private SocketListener socketListener;
+
         private IPAddress ip;
         private int port;
         public int Port => port;
@@ -83,9 +85,9 @@ namespace Channels.WebSockets
         // todo: pick a more appropriate container for connection management; this insane choice is just arbitrary
         private ConcurrentDictionary<WebSocketConnection, WebSocketConnection> connections = new ConcurrentDictionary<WebSocketConnection, WebSocketConnection>();
 
-        public void Start(IPAddress ip, int port)
+        public void StartLibuv(IPAddress ip, int port)
         {
-            if (uvListener == null)
+            if (uvListener == null && socketListener == null)
             {
                 uvThread = new UvThread();
                 uvListener = new UvTcpListener(uvThread, new IPEndPoint(ip, port));
@@ -93,52 +95,64 @@ namespace Channels.WebSockets
                 uvListener.Start();
             }
         }
-
-        private async void OnConnection(UvTcpConnection connection)
+        public void StartManagedSockets(IPAddress ip, int port)
         {
-            WebSocketConnection socket = null;
-            try
+            if (uvListener == null && socketListener == null)
             {
-                WriteStatus("Connected");
+                socketListener = new SocketListener();
+                socketListener.OnConnection(OnConnection);
+                socketListener.Start(new IPEndPoint(ip, port));
+            }
+        }
 
-                WriteStatus("Parsing http request...");
-                var request = await ParseHttpRequest(connection.Input);
+        private async void OnConnection(IChannel connection)
+        {
+            using (connection)
+            {
+                WebSocketConnection socket = null;
                 try
                 {
-                    WriteStatus("Identifying protocol...");
-                    socket = GetProtocol(connection, ref request);
-                    WriteStatus($"Protocol: {WebSocketProtocol.Name}");
-                    WriteStatus("Authenticating...");
-                    if (!await OnAuthenticateAsync(socket, ref request.Headers)) throw new InvalidOperationException("Authentication refused");
-                    WriteStatus("Completing handshake...");
-                    await WebSocketProtocol.CompleteHandshakeAsync(ref request, socket);
+                    WriteStatus("Connected");
+
+                    WriteStatus("Parsing http request...");
+                    var request = await ParseHttpRequest(connection.Input);
+                    try
+                    {
+                        WriteStatus("Identifying protocol...");
+                        socket = GetProtocol(connection, ref request);
+                        WriteStatus($"Protocol: {WebSocketProtocol.Name}");
+                        WriteStatus("Authenticating...");
+                        if (!await OnAuthenticateAsync(socket, ref request.Headers)) throw new InvalidOperationException("Authentication refused");
+                        WriteStatus("Completing handshake...");
+                        await WebSocketProtocol.CompleteHandshakeAsync(ref request, socket);
+                    }
+                    finally
+                    {
+                        request.Dispose(); // can't use "ref request" or "ref headers" otherwise
+                    }
+                    WriteStatus("Handshake complete hook...");
+                    await OnHandshakeCompleteAsync(socket);
+
+                    connections.TryAdd(socket, socket);
+                    WriteStatus("Processing incoming frames...");
+                    await socket.ProcessIncomingFramesAsync(this);
+                    WriteStatus("Exiting...");
+                    socket.Close();
+                }
+                catch (Exception ex)
+                {// meh, bye bye broken connection
+                    try { socket?.Close(ex); } catch { }
+                    WriteStatus(ex.StackTrace);
+                    WriteStatus(ex.GetType().Name);
+                    WriteStatus(ex.Message);
                 }
                 finally
                 {
-                    request.Dispose(); // can't use "ref request" or "ref headers" otherwise
+                    WebSocketConnection tmp;
+                    if (socket != null) connections.TryRemove(socket, out tmp);
+                    try { connection.Output.CompleteWriting(); } catch { }
+                    try { connection.Input.CompleteReading(); } catch { }
                 }
-                WriteStatus("Handshake complete hook...");
-                await OnHandshakeCompleteAsync(socket);
-
-                connections.TryAdd(socket, socket);
-                WriteStatus("Processing incoming frames...");
-                await socket.ProcessIncomingFramesAsync(this);
-                WriteStatus("Exiting...");
-                socket.Close();
-            }
-            catch (Exception ex)
-            {// meh, bye bye broken connection
-                try { socket?.Close(ex); } catch { }
-                WriteStatus(ex.StackTrace);
-                WriteStatus(ex.GetType().Name);
-                WriteStatus(ex.Message);
-            }
-            finally
-            {
-                WebSocketConnection tmp;
-                if (socket != null) connections.TryRemove(socket, out tmp);
-                try { connection.Output.CompleteWriting(); } catch { }
-                try { connection.Input.CompleteReading(); } catch { }
             }
         }
 
@@ -242,7 +256,7 @@ namespace Channels.WebSockets
         protected virtual Task<bool> OnAuthenticateAsync(WebSocketConnection connection, ref HttpRequestHeaders headers) => TaskResult.True;
         protected virtual Task OnHandshakeCompleteAsync(WebSocketConnection connection) => TaskResult.True;
 
-        private WebSocketConnection GetProtocol(UvTcpConnection connection, ref HttpRequest request)
+        private WebSocketConnection GetProtocol(IChannel connection, ref HttpRequest request)
         {
             var headers = request.Headers;
             string host = headers.GetAsciiString("Host");
@@ -524,6 +538,7 @@ namespace Channels.WebSockets
             "Upgrade-Insecure-Requests",
             "User-Agent"
         }, CommonHeadersLowerCaseInvariant = CommonHeaders.Select(s => s.ToLowerInvariant()).ToArray();
+
         private static string ToHeaderKey(ref ReadableBuffer headerName)
         {
             var lowerCaseHeaders = CommonHeadersLowerCaseInvariant;
@@ -558,6 +573,10 @@ namespace Channels.WebSockets
             uvThread?.Dispose();
             uvListener = null;
             uvThread = null;
+
+            socketListener?.Stop();
+            socketListener?.Dispose();
+            socketListener = null;
         }
     }
 }

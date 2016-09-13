@@ -1,5 +1,6 @@
 ﻿using Channels;
 using Channels.Networking.Libuv;
+using Channels.Networking.Sockets;
 using Channels.Text.Primitives;
 using Channels.WebSockets;
 using System;
@@ -49,11 +50,13 @@ namespace SampleServer
 #endif
                 WriteAssemblyVersion(typeof(ReadableBuffer));
                 WriteAssemblyVersion(typeof(UvTcpListener));
+                WriteAssemblyVersion(typeof(SocketListener));
                 WriteAssemblyVersion(typeof(ReadableBufferExtensions));
 
                 // TestOpenAndCloseListener();
                 // RunBasicEchoServer();
-                RunWebSocketServer();
+                // RunWebSocketServer(ChannelProvider.Libuv);
+                RunWebSocketServer(ChannelProvider.ManagedSockets);
                 CollectGarbage();
                 return 0;
             } catch(Exception ex)
@@ -149,12 +152,25 @@ namespace SampleServer
                 GC.WaitForPendingFinalizers();
             }
         }
-
-        public static void RunWebSocketServer()
+        public enum ChannelProvider
+        {
+            Libuv,
+            ManagedSockets
+        }
+        public static void RunWebSocketServer(ChannelProvider provider)
         {
             using (var server = new MyServer())
             {
-                server.Start(IPAddress.Loopback, 5001);
+                switch(provider)
+                {
+                    case ChannelProvider.Libuv:
+                        server.StartLibuv(IPAddress.Loopback, 5001);
+                        break;
+                    case ChannelProvider.ManagedSockets:
+                        server.StartManagedSockets(IPAddress.Loopback, 5001);
+                        break;
+                }
+                
                 Console.WriteLine($"Running on {server.IP}:{server.Port}...");
                 CancellationTokenSource cancel = new CancellationTokenSource();
 
