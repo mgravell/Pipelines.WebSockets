@@ -1,19 +1,17 @@
-﻿using Channels.WebSockets;
+﻿using Channels;
+using Channels.Networking.Libuv;
+using Channels.Text.Primitives;
+using Channels.WebSockets;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Net;
+using System.Net.WebSockets;
+using System.Reflection;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
-using System.Net.WebSockets;
-using System.Numerics;
-using Channels.Text.Primitives;
-using System.Reflection;
-using System.Runtime.CompilerServices;
-using Channels;
-using Channels.Networking.Libuv;
 
 namespace SampleServer
 {

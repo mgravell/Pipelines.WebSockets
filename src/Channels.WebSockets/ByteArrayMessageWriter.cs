@@ -19,7 +19,7 @@ namespace Channels.WebSockets
 
         unsafe void IMessageWriter.Write(ref WritableBuffer buffer)
         {
-            if (count != 0) buffer.Write(value, offset, count);
+            if (count != 0) buffer.Write(new Span<byte>(value, offset, count));
         }
 
         unsafe int IMessageWriter.GetTotalBytes() => count;

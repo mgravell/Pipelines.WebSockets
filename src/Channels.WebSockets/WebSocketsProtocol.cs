@@ -30,9 +30,9 @@ namespace Channels.WebSockets
             if (hashBase64.Length != ResponseTokenLength) throw new InvalidOperationException("Unexpected response key length");
             WebSocketServer.WriteStatus($"Response token: {hashBase64}");
 
-            buffer.Write(StandardPrefixBytes, 0, StandardPrefixBytes.Length);
+            buffer.Write(StandardPrefixBytes);
             WritableBufferExtensions.WriteAsciiString(ref buffer, hashBase64);
-            buffer.Write(StandardPostfixBytes, 0, StandardPostfixBytes.Length);
+            buffer.Write(StandardPostfixBytes);
 
             return buffer.FlushAsync();
         }
@@ -70,7 +70,7 @@ namespace Channels.WebSockets
             if (key.Length != ExpectedKeyLength) throw new ArgumentException("Invalid key length", nameof(key));
 
             byte[] arr = new byte[ExpectedKeyLength + WebSocketKeySuffixBytes.Length];
-            key.CopyTo(arr, 0);
+            key.CopyTo(arr);
             Buffer.BlockCopy( // append the magic number from RFC6455
                 WebSocketKeySuffixBytes, 0,
                 arr, ExpectedKeyLength,
@@ -150,7 +150,7 @@ namespace Channels.WebSockets
                 // have to use the slower version, but... meh
                 byte* header = stackalloc byte[16];
                 var slice = buffer.Slice(0, Math.Min(16, bytesAvailable));
-                slice.CopyTo(header, slice.Length);
+                slice.CopyTo(new Span<byte>(header, slice.Length));
                 // note that we're using the "slice" above to preview the header, but we
                 // still want to pass the original buffer down below, so that we can
                 // check the overall length (payload etc)

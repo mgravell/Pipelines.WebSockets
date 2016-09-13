@@ -8,6 +8,7 @@
   "dependencies": {
     "Channels": "0.2.0-beta-*",
     "Channels.Networking.Libuv": "0.2.0-beta-*",
+    "Channels.Networking.Sockets": "0.2.0-beta-*",
     "Channels.Text.Primitives": "0.2.0-beta-*",
     "Channels.WebSockets": {
       "target": "project",
@@ -15,7 +16,7 @@
     }
   },
   "frameworks": {
-    "net451": {},
+    //"net451": {},
     "netcoreapp1.0": {
       "dependencies": {
         "Microsoft.NETCore.App": {

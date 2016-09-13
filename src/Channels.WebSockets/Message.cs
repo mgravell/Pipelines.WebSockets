@@ -86,7 +86,8 @@ namespace Channels.WebSockets
                 foreach (var span in buffer)
                 {
                     ArraySegment<byte> segment;
-                    if(!span.TryGetArray(default(void*), out segment))
+                    void* ignored;
+                    if(!span.TryGetArrayElseGetPointer(out segment, out ignored))
                     {
                         throw new InvalidOperationException("Array not available for span");
                     }

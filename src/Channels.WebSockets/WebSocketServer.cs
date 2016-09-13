@@ -7,15 +7,15 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Net;
-using System.Numerics;
 using System.Threading.Tasks;
 
 namespace Channels.WebSockets
 {
     public abstract class WebSocketServer : IDisposable
     {
-        private UvTcpListener listener;
-        private UvThread thread;
+        private UvTcpListener uvListener;
+        private UvThread uvThread;
+        
         private IPAddress ip;
         private int port;
         public int Port => port;
@@ -85,12 +85,12 @@ namespace Channels.WebSockets
 
         public void Start(IPAddress ip, int port)
         {
-            if (listener == null)
+            if (uvListener == null)
             {
-                thread = new UvThread();
-                listener = new UvTcpListener(thread, new IPEndPoint(ip, port));
-                listener.OnConnection(OnConnection);
-                listener.Start();
+                uvThread = new UvThread();
+                uvListener = new UvTcpListener(uvThread, new IPEndPoint(ip, port));
+                uvListener.OnConnection(OnConnection);
+                uvListener.Start();
             }
         }
 
@@ -339,11 +339,6 @@ namespace Channels.WebSockets
             Headers
         }
 
-        private static Vector<byte>
-            _vectorCRs = new Vector<byte>((byte)'\r'),
-            _vectorLFs = new Vector<byte>((byte)'\n'),
-            _vectorSpaces = new Vector<byte>((byte)' '),
-            _vectorColons = new Vector<byte>((byte)':');
         private static async Task<HttpRequest> ParseHttpRequest(IReadableChannel _input)
         {
             ReadableBuffer Method = default(ReadableBuffer), Path = default(ReadableBuffer), HttpVersion = default(ReadableBuffer);
@@ -369,53 +364,49 @@ namespace Channels.WebSockets
                         if (_state == ParsingState.StartLine)
                         {
                             // Find \n
-                            var delim = buffer.IndexOf(ref _vectorLFs);
-                            if (delim.IsEnd)
+                            ReadCursor delim;
+                            ReadableBuffer startLine;
+                            if (!buffer.TrySliceTo((byte)'\r', (byte)'\n', out startLine, out delim))
                             {
                                 continue;
                             }
 
-                            // Grab the entire start line
-                            var startLine = buffer.Slice(0, delim);
 
                             // Move the buffer to the rest
-                            buffer = buffer.Slice(delim).Slice(1);
+                            buffer = buffer.Slice(delim).Slice(2);
 
-                            delim = startLine.IndexOf(ref _vectorSpaces);
-                            if (delim.IsEnd)
+                            ReadableBuffer method;
+                            if (!startLine.TrySliceTo((byte)' ', out method, out delim))
                             {
                                 throw new Exception();
                             }
 
-                            var method = startLine.Slice(0, delim);
                             Method = method.Preserve();
 
                             // Skip ' '
                             startLine = startLine.Slice(delim).Slice(1);
 
-                            delim = startLine.IndexOf(ref _vectorSpaces);
-                            if (delim.IsEnd)
+                            ReadableBuffer path;
+                            if (!startLine.TrySliceTo((byte)' ', out path, out delim))
                             {
                                 throw new Exception();
                             }
 
-                            var path = startLine.Slice(0, delim);
                             Path = path.Preserve();
 
                             // Skip ' '
                             startLine = startLine.Slice(delim).Slice(1);
 
-                            delim = startLine.IndexOf(ref _vectorCRs);
-                            if (delim.IsEnd)
+                            var httpVersion = startLine;
+                            if (httpVersion.IsEmpty)
                             {
                                 throw new Exception();
                             }
 
-                            var httpVersion = startLine.Slice(0, delim);
                             HttpVersion = httpVersion.Preserve();
 
                             _state = ParsingState.Headers;
-                            consumed = startLine.End;
+                            consumed = buffer.Start;
                         }
 
                         // Parse headers
@@ -457,34 +448,32 @@ namespace Channels.WebSockets
 
                             // End of the header
                             // \n
-                            var delim = buffer.IndexOf(ref _vectorLFs);
-                            if (delim.IsEnd)
+                            ReadCursor delim;
+                            ReadableBuffer headerPair;
+                            if (!buffer.TrySliceTo((byte)'\n', out headerPair, out delim))
                             {
                                 break;
                             }
 
-                            var headerPair = buffer.Slice(0, delim);
                             buffer = buffer.Slice(delim).Slice(1);
 
                             // :
-                            delim = headerPair.IndexOf(ref _vectorColons);
-                            if (delim.IsEnd)
+                            if (!headerPair.TrySliceTo((byte)':', out headerName, out delim))
                             {
                                 throw new Exception();
                             }
-                            headerName = headerPair.Slice(0, delim).TrimStart();
+
+                            headerName = headerName.TrimStart();
                             headerPair = headerPair.Slice(delim).Slice(1);
 
                             // \r
-                            delim = headerPair.IndexOf(ref _vectorCRs);
-                            if (delim.IsEnd)
+                            if (!headerPair.TrySliceTo((byte)'\r', out headerValue, out delim))
                             {
                                 // Bad request
                                 throw new Exception();
                             }
 
-                            headerValue = headerPair.Slice(0, delim).TrimStart();
-
+                            headerValue = headerValue.TrimStart();
                             Headers[ToHeaderKey(ref headerName)] = headerValue.Preserve();
 
                             // Move the consumed
@@ -565,10 +554,10 @@ namespace Channels.WebSockets
 
         public void Stop()
         {
-            listener?.Stop();
-            thread?.Dispose();
-            listener = null;
-            thread = null;
+            uvListener?.Stop();
+            uvThread?.Dispose();
+            uvListener = null;
+            uvThread = null;
         }
     }
 }
