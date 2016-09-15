@@ -56,7 +56,7 @@ namespace Channels.WebSockets
                 }
                 finally
                 {
-                    buffer.Consumed(buffer.Start);
+                    buffer.Consumed(buffer.Start, buffer.End);
                 }
             }
         }

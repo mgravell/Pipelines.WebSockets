@@ -95,13 +95,14 @@ namespace Channels.WebSockets
             if (payloadLength > ushort.MaxValue)
             { // write as a 64-bit length
                 span[index++] = (byte)((mask != 0 ? 128 : 0) | 127);
-                span.Slice(index).Write(payloadLength);
+                span.Slice(index).Write((uint)0);
+                span.Slice(index + 4).Write(ToNetworkByteOrder((uint)payloadLength));
                 index += 8;
             }
             else if (payloadLength > 125)
             { // write as a 16-bit length
                 span[index++] = (byte)((mask != 0 ? 128 : 0) | 126);
-                span.Slice(index).Write((ushort)payloadLength);
+                span.Slice(index).Write(ToNetworkByteOrder((ushort)payloadLength));
                 index += 2;
             }
             else
@@ -115,6 +116,17 @@ namespace Channels.WebSockets
             }
             output.CommitBytes(index);
         }
+
+        // note assumes little endian architecture
+        private static ulong ToNetworkByteOrder(uint value)
+            => (value >> 24)
+            | ((value >> 8) & 0xFF00)
+            | ((value << 8) & 0xFF0000)
+            | ((value << 24) & 0xFF000000);
+
+        private static ushort ToNetworkByteOrder(ushort value)
+            => (ushort)(value >> 8 | value << 8);
+
         internal const int MaxHeaderLength = 14;
         // the `unsafe` here is so that in the "multiple spans, header crosses spans", we can use stackalloc to
         // collate the header bytes in one place, and pass that down for analysis

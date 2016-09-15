@@ -182,7 +182,9 @@ namespace SampleServer
                         Console.WriteLine("c: start client");
                         Console.WriteLine("c ###: start ### clients");
                         Console.WriteLine("b: broadbast from server");
+                        Console.WriteLine("b ###: broadcast ### bytes from server");
                         Console.WriteLine("s: send from clients");
+                        Console.WriteLine("s ###: send ### bytes from clients");
                         Console.WriteLine("p: ping");
                         Console.WriteLine("l: toggle logging");
                         Console.WriteLine("cls: clear console");
@@ -313,9 +315,23 @@ namespace SampleServer
                             {
                                 StartClients(cancel.Token, i);
                             }
-                            if ((match = Regex.Match(line, "s ([0-9]+)")).Success && int.TryParse(match.Groups[1].Value, out i) && i.ToString() == match.Groups[1].Value && i >= 1)
+                            else if ((match = Regex.Match(line, "s ([0-9]+)")).Success && int.TryParse(match.Groups[1].Value, out i) && i.ToString() == match.Groups[1].Value && i >= 1)
                             {
                                 SendFromClients(cancel.Token, new string('#', i)).FireOrForget();
+                            }
+                            else if ((match = Regex.Match(line, "b ([0-9]+)")).Success && int.TryParse(match.Groups[1].Value, out i) && i.ToString() == match.Groups[1].Value && i >= 1)
+                            {
+                                server.BroadcastAsync(new string('#', i)).ContinueWith(t =>
+                                {
+                                    try
+                                    {
+                                        Console.WriteLine($"Broadcast to {t.Result} clients");
+                                    }
+                                    catch (Exception e)
+                                    {
+                                        WriteError(e);
+                                    }
+                                });
                             }
                             else
                             {
