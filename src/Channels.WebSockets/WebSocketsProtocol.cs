@@ -38,15 +38,6 @@ namespace Channels.WebSockets
         }
         static readonly byte[] WebSocketKeySuffixBytes = Encoding.ASCII.GetBytes("258EAFA5-E914-47DA-95CA-C5AB0DC85B11");
 
-        static bool IsBase64(byte value)
-        {
-            return (value >= (byte)'0' && value <= (byte)'9')
-                || (value >= (byte)'a' && value <= (byte)'z')
-                || (value >= (byte)'A' && value <= (byte)'Z')
-                || (value == (byte)'/')
-                || (value == (byte)'+')
-                || (value == (byte)'=');
-        }
         internal static void ComputeReply(ReadableBuffer key, Span<byte> destination)
         {
             //To prove that the handshake was received, the server has to take two
