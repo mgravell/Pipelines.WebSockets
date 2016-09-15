@@ -17,7 +17,7 @@ namespace Channels.WebSockets
             }
             headers = null;
         }
-        public HttpRequestHeaders(Dictionary<string, ReadableBuffer> headers)
+        internal HttpRequestHeaders(Dictionary<string, ReadableBuffer> headers)
         {
             this.headers = headers;
         }

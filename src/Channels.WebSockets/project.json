@@ -3,7 +3,7 @@
   "buildOptions": {
     "allowUnsafe": true,
     "keyFile": "../../tools/Key.snk",
-    "define": []
+    "define": ["LOGGING"]
   },
 
   "dependencies": {
@@ -13,8 +13,9 @@
     "Channels.Text.Primitives": "0.2.0-beta-*",
     "NETStandard.Library": "1.6.0",
     "System.Numerics.Vectors": "4.1.1",
-    "System.Binary.Base64":  "0.1.0-e*",
-    "System.Threading.Tasks.Extensions": "4.0.0"
+    "System.Binary.Base64": "0.1.0-e*",
+    "System.Threading.Tasks.Extensions": "4.0.0",
+    "System.Security.Cryptography.Algorithms": "4.2.0"
   },
 
   "frameworks": {

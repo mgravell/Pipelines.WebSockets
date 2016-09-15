@@ -28,4 +28,22 @@ namespace Channels.WebSockets
             Headers = new HttpRequestHeaders(headers);
         }
     }
+    internal struct HttpResponse : IDisposable
+    {
+        private HttpRequest request;
+        public void Dispose()
+        {
+            request.Dispose();
+            request = default(HttpRequest);
+        }
+        internal HttpResponse(HttpRequest request)
+        {
+            this.request = request;
+        }
+        public HttpRequestHeaders Headers => request.Headers;
+        // looks similar, but different order
+        public ReadableBuffer HttpVersion => request.Method;
+        public ReadableBuffer StatusCode => request.Path;
+        public ReadableBuffer StatusText => request.HttpVersion;
+    }
 }

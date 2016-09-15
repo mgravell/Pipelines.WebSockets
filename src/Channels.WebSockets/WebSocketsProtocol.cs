@@ -5,6 +5,7 @@ using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading.Tasks;
+using Channels.Networking.Sockets;
 
 namespace Channels.WebSockets
 {
@@ -17,33 +18,150 @@ namespace Channels.WebSockets
                             + "Connection: Upgrade\r\n"
                             + "Sec-WebSocket-Accept: "),
             StandardPostfixBytes = Encoding.ASCII.GetBytes("\r\n\r\n");
-        internal static Task CompleteHandshakeAsync(ref HttpRequest request, WebSocketConnection socket)
+        internal static Task CompleteServerHandshakeAsync(ref HttpRequest request, WebSocketConnection socket)
         {
             var key = request.Headers.GetRaw("Sec-WebSocket-Key");
 
             var connection = socket.Connection;
 
-            const int ResponseTokenLength = 28;
-
             var buffer = connection.Output.Alloc(StandardPrefixBytes.Length +
-                ResponseTokenLength + StandardPostfixBytes.Length);
+                SecResponseLength + StandardPostfixBytes.Length);
 
             buffer.Write(StandardPrefixBytes);
             // RFC6455 logic to prove that we know how to web-socket
-            buffer.Ensure(ResponseTokenLength);
+            buffer.Ensure(SecResponseLength);
             int bytes = ComputeReply(key, buffer.Memory);
-            if (bytes != ResponseTokenLength)
+            if (bytes != SecResponseLength)
             {
-                throw new InvalidOperationException($"Incorrect response token length; expected {ResponseTokenLength}, got {bytes}");
+                throw new InvalidOperationException($"Incorrect response token length; expected {SecResponseLength}, got {bytes}");
             }
-            buffer.CommitBytes(ResponseTokenLength);
+            buffer.CommitBytes(SecResponseLength);
             buffer.Write(StandardPostfixBytes);
 
             return buffer.FlushAsync();
         }
+
+        private static readonly RandomNumberGenerator rng = RandomNumberGenerator.Create();
+        private static readonly Random cheapRandom = new Random();
+        public static int CreateMask()
+        {
+            int mask = cheapRandom.Next();
+            if (mask == 0) mask = 0x2211BBFF; // just something non zero
+            return mask;
+        }
+        static readonly byte[] maskBytesBuffer = new byte[4];
+        public static void GetRandomBytes(byte[] buffer)
+        {
+            lock (rng) // thread safety not explicit
+            {
+                rng.GetBytes(buffer);
+            }
+        }
+        internal static async Task<WebSocketConnection> ClientHandshake(IChannel channel, Uri uri, string origin, string protocol)
+        {
+            WebSocketServer.WriteStatus(ConnectionType.Client, "Writing client handshake...");
+            // write the outbound request portion of the handshake
+            var output = channel.Output.Alloc();
+            output.Write(GET);
+            WritableBufferExtensions.WriteAsciiString(ref output, uri.PathAndQuery);
+            output.Write(HTTP_Host);
+            WritableBufferExtensions.WriteAsciiString(ref output, uri.Host);
+            output.Write(UpgradeConnectionKey);
+
+            byte[] challengeKey = new byte[WebSocketProtocol.SecResponseLength];
+
+            GetRandomBytes(challengeKey); // we only want the first 16 for entropy, but... meh
+            output.Ensure(WebSocketProtocol.SecRequestLength);
+            int bytesWritten = Base64.Encode(new ReadOnlySpan<byte>(challengeKey, 0, 16), output.Memory);
+            // now cheekily use that data we just wrote the the output buffer
+            // as a source to compute the expected bytes, and store them back
+            // into challengeKey; sneaky!
+            WebSocketProtocol.ComputeReply(
+                output.Memory.Slice(0, WebSocketProtocol.SecRequestLength),
+                challengeKey);
+            output.CommitBytes(bytesWritten);
+            output.Write(CRLF);
+
+            if (!string.IsNullOrWhiteSpace(origin))
+            {
+                WritableBufferExtensions.WriteAsciiString(ref output, "Origin: ");
+                WritableBufferExtensions.WriteAsciiString(ref output, origin);
+                output.Write(CRLF);
+            }
+            if (!string.IsNullOrWhiteSpace(protocol))
+            {
+                WritableBufferExtensions.WriteAsciiString(ref output, "Sec-WebSocket-Protocol: ");
+                WritableBufferExtensions.WriteAsciiString(ref output, protocol);
+                output.Write(CRLF);
+            }
+            output.Write(WebSocketVersion);
+            output.Write(CRLF); // final CRLF to end the HTTP request
+            await output.FlushAsync();
+
+            WebSocketServer.WriteStatus(ConnectionType.Client, "Parsing response to client handshake...");
+            using (var resp = await WebSocketServer.ParseHttpResponse(channel.Input))
+            {
+                if (!resp.HttpVersion.Equals(ExpectedHttpVersion)
+                    || !resp.StatusCode.Equals(ExpectedStatusCode)
+                    || !resp.StatusText.Equals(ExpectedStatusText)
+                    || !resp.Headers.GetRaw("Upgrade").Equals(ExpectedUpgrade)
+                    || !resp.Headers.GetRaw("Connection").Equals(ExpectedConnection))
+                {
+                    throw new InvalidOperationException("Not a web-socket server");
+                }
+
+                var accept = resp.Headers.GetRaw("Sec-WebSocket-Accept");
+                if (!accept.Equals(challengeKey))
+                {
+                    throw new InvalidOperationException("Sec-WebSocket-Accept mismatch");
+                }
+
+                protocol = resp.Headers.GetAsciiString("Sec-WebSocket-Protocol");
+            }
+
+            var webSocket = new WebSocketConnection(channel, ConnectionType.Client)
+            {
+                Host = uri.Host,
+                RequestLine = uri.OriginalString,
+                Origin = origin,
+                Protocol = protocol
+            };
+            webSocket.StartProcessingIncomingFrames();
+            return webSocket;
+        }
+        static readonly byte[] GET = Encoding.ASCII.GetBytes("GET "),
+            HTTP_Host = Encoding.ASCII.GetBytes(" HTTP/1.1\r\nHost: "),
+            UpgradeConnectionKey = Encoding.ASCII.GetBytes("\r\nUpgrade: websocket\r\n"
+                        + "Connection: Upgrade\r\n"
+                        + "Sec-WebSocket-Key: "),
+            WebSocketVersion = Encoding.ASCII.GetBytes("Sec-WebSocket-Version: 13\r\n"),
+            CRLF = { (byte)'\r', (byte)'\n' };
+
+        static readonly byte[]
+            ExpectedHttpVersion = Encoding.ASCII.GetBytes("HTTP/1.1"),
+            ExpectedStatusCode = Encoding.ASCII.GetBytes("101"),
+            ExpectedStatusText = Encoding.ASCII.GetBytes("Switching Protocols"),
+            ExpectedUpgrade = Encoding.ASCII.GetBytes("websocket"),
+            ExpectedConnection = Encoding.ASCII.GetBytes("Upgrade");
+
+
         static readonly byte[] WebSocketKeySuffixBytes = Encoding.ASCII.GetBytes("258EAFA5-E914-47DA-95CA-C5AB0DC85B11");
 
-        internal static int ComputeReply(ReadableBuffer key, Span<byte> destination)
+        internal const int SecRequestLength = 24;
+        internal const int SecResponseLength = 28;
+        internal unsafe static int ComputeReply(ReadableBuffer key, Span<byte> destination)
+        {
+            if(key.IsSingleSpan)
+            {
+                return ComputeReply(key.FirstSpan, destination);
+            }
+            if (key.Length != SecRequestLength) throw new ArgumentException("Invalid key length", nameof(key));
+            byte* ptr = stackalloc byte[SecRequestLength];
+            var span = new Span<byte>(ptr, SecRequestLength);
+            key.CopyTo(span);
+            return ComputeReply(destination, destination);
+        }
+        internal static int ComputeReply(ReadOnlySpan<byte> key, Span<byte> destination)
         {
             //To prove that the handshake was received, the server has to take two
             //pieces of information and combine them to form a response.  The first
@@ -62,27 +180,25 @@ namespace Channels.WebSockets
             //[RFC4648]), of this concatenation is then returned in the server's
             //handshake.
 
-            const int ExpectedKeyLength = 24;
-            if (key.Length != ExpectedKeyLength) throw new ArgumentException("Invalid key length", nameof(key));
+            if (key.Length != SecRequestLength) throw new ArgumentException("Invalid key length", nameof(key));
 
-            byte[] arr = new byte[ExpectedKeyLength + WebSocketKeySuffixBytes.Length];
-            key.CopyTo(arr);
+            byte[] arr = new byte[SecRequestLength + WebSocketKeySuffixBytes.Length];
+            key.TryCopyTo(arr);
             Buffer.BlockCopy( // append the magic number from RFC6455
                 WebSocketKeySuffixBytes, 0,
-                arr, ExpectedKeyLength,
+                arr, SecRequestLength,
                 WebSocketKeySuffixBytes.Length);
 
             // compute the hash
             using (var sha = SHA1.Create())
             {
                 var hash = sha.ComputeHash(arr, 0,
-                    ExpectedKeyLength + WebSocketKeySuffixBytes.Length);
+                    SecRequestLength + WebSocketKeySuffixBytes.Length);
 
                 return Base64.Encode(hash, destination);
             }
         }
-
-
+        
 
         internal static void WriteFrameHeader(ref WritableBuffer output, WebSocketsFrame.FrameFlags flags, WebSocketsFrame.OpCodes opCode, int payloadLength, int mask)
         {
@@ -212,16 +328,26 @@ namespace Channels.WebSockets
             buffer = buffer.Slice(headerLength); // header is fully consumed now
             return true;
         }
-        internal static Task WriteAsync<T>(WebSocketConnection connection, WebSocketsFrame.OpCodes opCode, ref T message)
+        internal static Task WriteAsync<T>(WebSocketConnection connection,
+            WebSocketsFrame.OpCodes opCode,
+            WebSocketsFrame.FrameFlags flags, ref T message)
             where T : struct, IMessageWriter
         {
             int payloadLength = message.GetTotalBytes();
             var buffer = connection.Connection.Output.Alloc(MaxHeaderLength + payloadLength);
-            WriteFrameHeader(ref buffer, WebSocketsFrame.FrameFlags.IsFinal, opCode, payloadLength, 0);
-            if (payloadLength != 0) message.Write(ref buffer);
+            int mask = connection.ConnectionType == ConnectionType.Client ? CreateMask() : 0;
+            WriteFrameHeader(ref buffer, WebSocketsFrame.FrameFlags.IsFinal, opCode, payloadLength, mask);
+            if (payloadLength != 0)
+            {
+                if (mask == 0) { message.Write(ref buffer); }
+                else
+                {
+                    throw new NotImplementedException("Masked messages with payload... damn, that gets awkward");
+                }
+            }
             return buffer.FlushAsync();
         }
-
+        
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private static int ReadBigEndianInt32(Span<byte> span, int offset)
         {

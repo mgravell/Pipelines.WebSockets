@@ -292,6 +292,9 @@ namespace SampleServer
                                 }
                             });
                             break;
+                        case "cc":
+                            StartChannelClients();
+                            break;
                         case "c":
                             StartClients(cancel.Token);
                             break;
@@ -344,6 +347,16 @@ namespace SampleServer
                 cancel.Cancel();                
             }
         }
+
+        private static void StartChannelClients(int count = 1)
+        {
+            if (count <= 0) return;
+            int countBefore = ClientCount;
+            for (int i = 0; i < count; i++) Task.Run(() => ExecuteChannel(true));
+            // not thread-pool so probably aren't there yet
+            Console.WriteLine($"{count} client(s) started; expected: {countBefore + count}");
+        }
+
         private static void StartClients(CancellationToken cancel, int count = 1)
         {
             if (count <= 0) return;
@@ -396,13 +409,14 @@ namespace SampleServer
             int count = 0;
             foreach (var client in arr)
             {
-                var msg = encoding.GetBytes(message ?? $"Hello from client {client.Id}");
                 try
                 {
-                    await client.Socket.SendAsync(new ArraySegment<byte>(msg, 0, msg.Length), WebSocketMessageType.Text, true, cancel);
+                    await client.SendAsync(message ?? $"Hello from client {client.Id}", cancel);
                     count++;
                 }
                 catch { }
+                
+                
             }
             return count;
         }
@@ -419,10 +433,8 @@ namespace SampleServer
             {
                 try
                 {
-                    var msg = encoding.GetBytes($"Hello ");
-                    await client.Socket.SendAsync(new ArraySegment<byte>(msg, 0, msg.Length), WebSocketMessageType.Text, false, cancel);
-                    msg = encoding.GetBytes($"from client {client.Id}");
-                    await client.Socket.SendAsync(new ArraySegment<byte>(msg, 0, msg.Length), WebSocketMessageType.Text, true, cancel);
+                    await client.SendAsync($"Hello ", cancel, false);
+                    await client.SendAsync($"from client {client.Id}", cancel, true);
                     count++;
                 }
                 catch { }
@@ -442,7 +454,7 @@ namespace SampleServer
                 var msg = encoding.GetBytes($"Hello from client {client.Id}");
                 try
                 {
-                    await client.Socket.CloseAsync(WebSocketCloseStatus.NormalClosure, "bye", cancel);
+                    await client.CloseAsync(cancel);
                     count++;
                 }
                 catch { }
@@ -451,8 +463,13 @@ namespace SampleServer
         }
         struct ClientWebSocketWithIdentity : IEquatable<ClientWebSocketWithIdentity>
         {
-            public readonly ClientWebSocket Socket;
+            public readonly object Socket;
             public readonly int Id;
+            public ClientWebSocketWithIdentity(WebSocketConnection socket, int id)
+            {
+                Socket = socket;
+                Id = id;
+            }
             public ClientWebSocketWithIdentity(ClientWebSocket socket, int id)
             {
                 Socket = socket;
@@ -462,14 +479,66 @@ namespace SampleServer
             public bool Equals(ClientWebSocketWithIdentity obj) => obj.Id == this.Id && obj.Socket == this.Socket;
             public override int GetHashCode() => Id;
             public override string ToString() => $"{Id}: {Socket}";
+
+            internal Task SendAsync(string message, CancellationToken cancel, bool final = true)
+            {
+                if (Socket is ClientWebSocket)
+                {
+                    var msg = encoding.GetBytes(message);
+                    return ((ClientWebSocket)Socket).SendAsync(new ArraySegment<byte>(msg, 0, msg.Length), WebSocketMessageType.Text, final, cancel);
+                }
+                else if (Socket is WebSocketConnection)
+                {
+                    return ((WebSocketConnection)Socket).SendAsync(message,
+                        final ? WebSocketsFrame.FrameFlags.IsFinal : 0);
+                }
+                else return null;
+            }
+
+            internal Task CloseAsync(CancellationToken cancel)
+            {
+                if (Socket is ClientWebSocket)
+                {
+                    return ((ClientWebSocket)Socket).CloseAsync(WebSocketCloseStatus.NormalClosure, "bye", cancel);
+                }
+                else if (Socket is WebSocketConnection)
+                {
+                    return ((WebSocketConnection)Socket).CloseAsync("bye");
+                }
+                else return null;
+            }
         }
+        private static async Task ExecuteChannel(bool listen)
+        {
+            try
+            {
+                const string uri = "ws://127.0.0.1:5001";
+                WriteStatus($"connecting to {uri}...");
+
+                var socket = await WebSocketConnection.ConnectAsync(uri);
+                
+                WriteStatus("connected");
+                int clientNumber = Interlocked.Increment(ref Program.clientNumber);
+                var named = new ClientWebSocketWithIdentity(socket, clientNumber);
+                lock (clients)
+                {
+                    clients.Add(named);
+                }
+                ClientChannelReceiveMessages(named);
+            }
+            catch (Exception ex)
+            {
+                WriteStatus(ex.GetType().Name);
+                WriteStatus(ex.Message);
+            }
+        }
+
         private static async Task Execute(bool listen, CancellationToken token)
         {
             try
             {
                 using (var socket = new ClientWebSocket())
                 {
-                    //socket.Options.KeepAliveInterval = TimeSpan.FromSeconds(10);
                     var uri = new Uri("ws://127.0.0.1:5001");
                     WriteStatus($"connecting to {uri}...");
                     await socket.ConnectAsync(uri, token);
@@ -483,7 +552,7 @@ namespace SampleServer
                     }
                     try
                     {
-                        await ReceiveLoop(named, token);
+                        await ClientReceiveLoop(named, token);
                     }
                     finally
                     {
@@ -492,20 +561,6 @@ namespace SampleServer
                             clients.Remove(named);
                         }
                     }
-
-                    //int count = 0, clientNumber = Interlocked.Increment(ref Program.clientNumber);
-                    // if (listen) Task.Run(() => ReceiveLoop(socket, token)).FireOrForget();
-                    //do
-                    //{
-                    //    string msg = $"hello from client {clientNumber} to server, message {++count}";
-                    //    int len = Encoding.ASCII.GetBytes(msg, 0, msg.Length, buffer, 0);
-
-                    //    WriteStatus("sending...");
-                    //    await socket.SendAsync(new ArraySegment<byte>(buffer, 0, len), WebSocketMessageType.Text, true, token);
-                    //    WriteStatus("sent...");
-
-                    //    await Task.Delay(5000, token);
-                    //} while (!token.IsCancellationRequested);
                 }
             }
             catch (Exception ex)
@@ -515,9 +570,22 @@ namespace SampleServer
             }
         }
 
-        private static async Task ReceiveLoop(ClientWebSocketWithIdentity named, CancellationToken token)
+        private static void ClientChannelReceiveMessages(ClientWebSocketWithIdentity named)
         {
-            var socket = named.Socket;
+            var socket = (WebSocketConnection)named.Socket;
+            socket.TextAsync += msg =>
+            {
+                if (logging)
+                {
+                    var message = msg.GetText();
+                    Console.WriteLine($"client {named.Id} received text, {msg.GetTotalBytes()} bytes, final: {msg.IsFinal}: {message}");
+                }
+                return null;
+            };
+        }
+        private static async Task ClientReceiveLoop(ClientWebSocketWithIdentity named, CancellationToken token)
+        {
+            var socket = (ClientWebSocket)named.Socket;
             var buffer = new byte[2048];
             while (!token.IsCancellationRequested)
             {

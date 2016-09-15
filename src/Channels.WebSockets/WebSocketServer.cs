@@ -115,39 +115,39 @@ namespace Channels.WebSockets
                 WebSocketConnection socket = null;
                 try
                 {
-                    WriteStatus("Connected");
+                    WriteStatus(ConnectionType.Server, "Connected");
 
-                    WriteStatus("Parsing http request...");
+                    WriteStatus(ConnectionType.Server, "Parsing http request...");
                     var request = await ParseHttpRequest(connection.Input);
                     try
                     {
-                        WriteStatus("Identifying protocol...");
+                        WriteStatus(ConnectionType.Server, "Identifying protocol...");
                         socket = GetProtocol(connection, ref request);
-                        WriteStatus($"Protocol: {WebSocketProtocol.Name}");
-                        WriteStatus("Authenticating...");
+                        WriteStatus(ConnectionType.Server, $"Protocol: {WebSocketProtocol.Name}");
+                        WriteStatus(ConnectionType.Server, "Authenticating...");
                         if (!await OnAuthenticateAsync(socket, ref request.Headers)) throw new InvalidOperationException("Authentication refused");
-                        WriteStatus("Completing handshake...");
-                        await WebSocketProtocol.CompleteHandshakeAsync(ref request, socket);
+                        WriteStatus(ConnectionType.Server, "Completing handshake...");
+                        await WebSocketProtocol.CompleteServerHandshakeAsync(ref request, socket);
                     }
                     finally
                     {
                         request.Dispose(); // can't use "ref request" or "ref headers" otherwise
                     }
-                    WriteStatus("Handshake complete hook...");
+                    WriteStatus(ConnectionType.Server, "Handshake complete hook...");
                     await OnHandshakeCompleteAsync(socket);
 
                     connections.TryAdd(socket, socket);
-                    WriteStatus("Processing incoming frames...");
+                    WriteStatus(ConnectionType.Server, "Processing incoming frames...");
                     await socket.ProcessIncomingFramesAsync(this);
-                    WriteStatus("Exiting...");
+                    WriteStatus(ConnectionType.Server, "Exiting...");
                     socket.Close();
                 }
                 catch (Exception ex)
                 {// meh, bye bye broken connection
                     try { socket?.Close(ex); } catch { }
-                    WriteStatus(ex.StackTrace);
-                    WriteStatus(ex.GetType().Name);
-                    WriteStatus(ex.Message);
+                    WriteStatus(ConnectionType.Server, ex.StackTrace);
+                    WriteStatus(ConnectionType.Server, ex.GetType().Name);
+                    WriteStatus(ConnectionType.Server, ex.Message);
                 }
                 finally
                 {
@@ -160,10 +160,10 @@ namespace Channels.WebSockets
         }
 
         [Conditional("LOGGING")]
-        internal static void WriteStatus(string message)
+        internal static void WriteStatus(ConnectionType type, string message)
         {
 #if LOGGING
-            Console.WriteLine($"[Server:{Environment.CurrentManagedThreadId}]: {message}");
+            Console.WriteLine($"[{type}:{Environment.CurrentManagedThreadId}]: {message}");
 #endif
         }
 
@@ -174,85 +174,8 @@ namespace Channels.WebSockets
         
 
         
-        protected virtual Task OnCloseAsync(WebSocketConnection connection, ref Message message)
-        {
-            // respond to a close in-kind (2-handed close)
-            return connection.SendAsync(WebSocketsFrame.OpCodes.Close, ref message);
-        }
-        protected virtual Task OnPongAsync(WebSocketConnection connection, ref Message message) => TaskResult.True;
-        protected virtual Task OnPingAsync(WebSocketConnection connection, ref Message message)
-        {
-            // by default, respond to a ping with a matching pong
-            return connection.SendAsync(WebSocketsFrame.OpCodes.Pong, ref message); // right back at you
-        }
-        protected virtual Task OnBinaryAsync(WebSocketConnection connection, ref Message message) => TaskResult.True;
-        protected virtual Task OnTextAsync(WebSocketConnection connection, ref Message message) => TaskResult.True;
-
-
-        internal Task OnFrameReceivedAsync(WebSocketConnection connection, ref WebSocketsFrame frame, ref ReadableBuffer buffer)
-        {
-            WriteStatus(frame.ToString());
-
-
-            // note that this call updates the connection state; must be called, even
-            // if we don't get as far as the 'switch' 
-            var opCode = connection.GetEffectiveOpCode(ref frame);
-
-            Message msg;
-            if (!frame.IsControlFrame)
-            {
-                if (frame.IsFinal)
-                {
-                    if (connection.HasBacklog)
-                    {
-                        try
-                        {
-                            // add our data to the existing backlog
-                            connection.AddBacklog(ref buffer, ref frame);
-
-                            // use the backlog buffer to execute the method; note that
-                            // we un-masked *while adding*; don't need mask here
-                            msg = new Message(connection.GetBacklog());
-                            return OnFrameReceivedImplAsync(connection, opCode, ref msg);
-                        }
-                        finally
-                        {
-                            // and release the backlog
-                            connection.ClearBacklog();
-                        }
-                    }
-                }
-                else if (BufferFragments)
-                {
-                    // need to buffer this data against the connection
-                    connection.AddBacklog(ref buffer, ref frame);
-                    return TaskResult.True;
-                }
-            }
-            msg = new Message(buffer.Slice(0, frame.PayloadLength), frame.Mask, frame.IsFinal);
-            return OnFrameReceivedImplAsync(connection, opCode, ref msg);
-        }
-        private Task OnFrameReceivedImplAsync(WebSocketConnection connection, WebSocketsFrame.OpCodes opCode, ref Message message)
-        {
-            switch (opCode)
-            {
-                case WebSocketsFrame.OpCodes.Binary:
-                    return OnBinaryAsync(connection, ref message);
-                case WebSocketsFrame.OpCodes.Text:
-                    return OnTextAsync(connection, ref message);
-                case WebSocketsFrame.OpCodes.Close:
-                    return OnCloseAsync(connection, ref message);
-                case WebSocketsFrame.OpCodes.Ping:
-                    return OnPingAsync(connection, ref message);
-                case WebSocketsFrame.OpCodes.Pong:
-                    return OnPongAsync(connection, ref message);
-                default:
-                    return TaskResult.True;
-            }
-        }
-
-
-
+        protected internal virtual Task OnBinaryAsync(WebSocketConnection connection, ref Message message) => TaskResult.True;
+        protected internal virtual Task OnTextAsync(WebSocketConnection connection, ref Message message) => TaskResult.True;
 
         static readonly char[] Comma = { ',' };
 
@@ -334,8 +257,9 @@ namespace Channels.WebSockets
             //endpoint of the WebSocket connection, both to allow multiple domains
             //to be served from one IP address and to allow multiple WebSocket
             //endpoints to be served by a single server.
-            var socket = new WebSocketConnection(connection);
+            var socket = new WebSocketConnection(connection, ConnectionType.Server);
             socket.Host = host;
+            socket.BufferFragments = BufferFragments;
             // Some early drafts used the latter, so we'll allow it as a fallback
             // in particular, two drafts of version "8" used (separately) **both**,
             // so we can't rely on the version for this (hybi-10 vs hybi-11).
@@ -355,8 +279,11 @@ namespace Channels.WebSockets
             StartLine,
             Headers
         }
-
-        private static async Task<HttpRequest> ParseHttpRequest(IReadableChannel _input)
+        internal static async Task<HttpResponse> ParseHttpResponse(IReadableChannel _input)
+        {
+            return new HttpResponse(await ParseHttpRequest(_input));
+        }
+        internal static async Task<HttpRequest> ParseHttpRequest(IReadableChannel _input)
         {
             ReadableBuffer Method = default(ReadableBuffer), Path = default(ReadableBuffer), HttpVersion = default(ReadableBuffer);
             Dictionary<string, ReadableBuffer> Headers = new Dictionary<string, ReadableBuffer>();
@@ -535,7 +462,9 @@ namespace Channels.WebSockets
             "Sec-WebSocket-Key",
             "Sec-WebSocket-Key1",
             "Sec-WebSocket-Key2",
+            "Sec-WebSocket-Accept",
             "Sec-WebSocket-Origin",
+            "Sec-WebSocket-Protocol",
             "Sec-WebSocket-Version",
             "Upgrade",
             "Upgrade-Insecure-Requests",
