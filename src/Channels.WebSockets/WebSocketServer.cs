@@ -550,20 +550,18 @@ namespace Channels.WebSockets
             return headerName.GetAsciiString();
         }
 
-        private static unsafe bool IsCaseInsensitiveAsciiMatch(ReadableBuffer bufferUnknownCase, string valueLowerCase)
+        private static bool IsCaseInsensitiveAsciiMatch(ReadableBuffer bufferUnknownCase, string valueLowerCase)
         {
             if (bufferUnknownCase.Length != valueLowerCase.Length) return false;
-            int index = 0;
-            fixed (char* valuePtr = valueLowerCase)
-                foreach (var span in bufferUnknownCase)
+            int charIndex = 0;
+            foreach (var span in bufferUnknownCase)
+            {
+                for (int spanIndex = 0; spanIndex < span.Length; spanIndex++)
                 {
-                    byte* bufferPtr = (byte*)span.UnsafePointer;
-                    for (int i = 0; i < span.Length; i++)
-                    {
-                        char x = (char)(*bufferPtr++), y = valuePtr[index++];
-                        if (x != y && char.ToLowerInvariant(x) != y) return false;
-                    }
+                    char x = (char)span[spanIndex], y = valueLowerCase[charIndex++];
+                    if (x != y && char.ToLowerInvariant(x) != y) return false;
                 }
+            }
             return true;
         }
 

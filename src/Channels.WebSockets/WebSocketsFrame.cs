@@ -47,18 +47,7 @@ namespace Channels.WebSockets
         private static readonly int vectorShift = (int)Math.Log(vectorWidth, 2);
         private static readonly int vectorOverflow = ~(~0 << vectorShift);
         private static readonly bool isHardwareAccelerated = Vector.IsHardwareAccelerated;
-        public static unsafe uint ApplyMask(byte[] data, int offset, int count, uint mask)
-        {
-            if (data == null) throw new ArgumentNullException(nameof(data));
-            if (offset < 0) throw new ArgumentOutOfRangeException(nameof(offset));
-            if (count < 0 || (offset + count) > data.Length) throw new ArgumentOutOfRangeException(nameof(count));
 
-            if (count == 0 || mask == 0) return mask;
-            fixed (byte* ptr = data)
-            {
-                return ApplyMask(ptr + offset, count, mask);
-            }
-        }
         private static unsafe uint ApplyMask(byte* ptr, int count, uint mask)
         {
             int chunks;
@@ -142,6 +131,9 @@ namespace Channels.WebSockets
             uint m = (uint)mask;
             foreach(var span in buffer)
             {
+                // note: this is an optimized xor implementation using Vector<byte>, qword hacks, etc; unsafe access
+                // to the span  is warranted
+                // note: in this case, we know we're talking about memory from the pool, so we know it is already pinned
                 m = ApplyMask((byte*)span.UnsafePointer, span.Length, m);
             }
         }

@@ -64,6 +64,7 @@ namespace Channels.WebSockets
         private static readonly Encoding Utf8Encoding = Encoding.UTF8;
         private static Decoder Utf8Decoder;
 
+        // note: `unsafe` here is only for the TryGetArrayElseGetPointer, and we only want the array (never the pointer)
         private static unsafe string GetText(List<ReadableBuffer> buffers)
         {
             // try to re-use a shared decoder; note that in heavy usage, we might need to allocate another

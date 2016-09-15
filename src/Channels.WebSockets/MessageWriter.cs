@@ -8,7 +8,7 @@
         }
         internal static StringMessageWriter Create(string message, bool computeLength = false)
         {
-            return string.IsNullOrEmpty(message) ? default(StringMessageWriter) : new StringMessageWriter(message, 0, message.Length, computeLength);
+            return string.IsNullOrEmpty(message) ? default(StringMessageWriter) : new StringMessageWriter(message, computeLength);
         }
     }
 }

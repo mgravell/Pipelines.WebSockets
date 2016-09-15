@@ -87,48 +87,47 @@ namespace Channels.WebSockets
 
 
 
-        internal static unsafe void WriteFrameHeader(ref WritableBuffer output, WebSocketsFrame.FrameFlags flags, WebSocketsFrame.OpCodes opCode, int payloadLength, int mask)
+        internal static void WriteFrameHeader(ref WritableBuffer output, WebSocketsFrame.FrameFlags flags, WebSocketsFrame.OpCodes opCode, int payloadLength, int mask)
         {
-            byte* buffer = (byte*)output.Memory.UnsafePointer;
+            output.Ensure(MaxHeaderLength);
 
-            int bytesWritten;
-            *buffer++ = (byte)(((int)flags & 240) | ((int)opCode & 15));
+            int index = 0;
+            var span = output.Memory;
+            span[index++] = (byte)(((int)flags & 240) | ((int)opCode & 15));
             if (payloadLength > ushort.MaxValue)
             { // write as a 64-bit length
-                *buffer++ = (byte)((mask != 0 ? 128 : 0) | 127);
-                *buffer++ = 0;
-                *buffer++ = 0;
-                *buffer++ = 0;
-                *buffer++ = 0;
-                *buffer++ = (byte)(payloadLength >> 24);
-                *buffer++ = (byte)(payloadLength >> 16);
-                *buffer++ = (byte)(payloadLength >> 8);
-                *buffer++ = (byte)(payloadLength);
-                bytesWritten = 10;
+                span[index++] = (byte)((mask != 0 ? 128 : 0) | 127);
+                span[index++] = 0;
+                span[index++] = 0;
+                span[index++] = 0;
+                span[index++] = 0;
+                span[index++] = (byte)(payloadLength >> 24);
+                span[index++] = (byte)(payloadLength >> 16);
+                span[index++] = (byte)(payloadLength >> 8);
+                span[index++] = (byte)(payloadLength);
             }
             else if (payloadLength > 125)
             { // write as a 16-bit length
-                *buffer++ = (byte)((mask != 0 ? 128 : 0) | 126);
-                *buffer++ = (byte)(payloadLength >> 8);
-                *buffer++ = (byte)(payloadLength);
-                bytesWritten = 4;
+                span[index++] = (byte)((mask != 0 ? 128 : 0) | 126);
+                span[index++] = (byte)(payloadLength >> 8);
+                span[index++] = (byte)(payloadLength);
             }
             else
             { // write in the header
-                *buffer++ = (byte)((mask != 0 ? 128 : 0) | payloadLength);
-                bytesWritten = 2;
+                span[index++] = (byte)((mask != 0 ? 128 : 0) | payloadLength);
             }
             if (mask != 0)
             {
-                *buffer++ = (byte)(mask >> 24);
-                *buffer++ = (byte)(mask >> 16);
-                *buffer++ = (byte)(mask >> 8);
-                *buffer++ = (byte)(mask);
-                bytesWritten += 4;
+                span[index++] = (byte)(mask >> 24);
+                span[index++] = (byte)(mask >> 16);
+                span[index++] = (byte)(mask >> 8);
+                span[index++] = (byte)(mask);
             }
-            output.CommitBytes(bytesWritten);
+            output.CommitBytes(index);
         }
         internal const int MaxHeaderLength = 14;
+        // the `unsafe` here is so that in the "multiple spans, header crosses spans", we can use stackalloc to
+        // collate the header bytes in one place, and pass that down for analysis
         internal unsafe static bool TryReadFrameHeader(ref ReadableBuffer buffer, out WebSocketsFrame frame)
         {
             int bytesAvailable = buffer.Length;
@@ -141,7 +140,7 @@ namespace Channels.WebSockets
             var span = buffer.FirstSpan;
             if (buffer.IsSingleSpan || span.Length >= MaxHeaderLength)
             {
-                return TryReadFrameHeader(span.Length, (byte*)span.UnsafePointer, ref buffer, out frame);
+                return TryReadFrameHeader(span.Length, span, ref buffer, out frame);
             }
             else
             {
@@ -154,10 +153,10 @@ namespace Channels.WebSockets
                 // note that we're using the "slice" above to preview the header, but we
                 // still want to pass the original buffer down below, so that we can
                 // check the overall length (payload etc)
-                return TryReadFrameHeader(slice.Length, header, ref buffer, out frame);
+                return TryReadFrameHeader(slice.Length, new Span<byte>(header, slice.Length), ref buffer, out frame);
             }
         }
-        internal static unsafe bool TryReadFrameHeader(int inspectableBytes, byte* header, ref ReadableBuffer buffer, out WebSocketsFrame frame)
+        internal static bool TryReadFrameHeader(int inspectableBytes, Span<byte> header, ref ReadableBuffer buffer, out WebSocketsFrame frame)
         {
             bool masked = (header[1] & 128) != 0;
             int tmp = header[1] & 127;
@@ -220,33 +219,15 @@ namespace Channels.WebSockets
             return buffer.FlushAsync();
         }
 
-        private static unsafe void Copy(byte* source, byte* destination, uint bytes)
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static int ReadBigEndianInt32(Span<byte> span, int offset)
         {
-            if ((bytes & ~7) != 0) // >= 8
-            {
-                ulong* source8 = (ulong*)source, destination8 = (ulong*)destination;
-                do
-                {
-                    *destination8++ = *source8++;
-                    bytes -= 8;
-                } while ((bytes & ~7) != 0); // >= 8
-                source = (byte*)source8;
-                destination = (byte*)destination8;
-            }
-            while (bytes-- != 0)
-            {
-                *destination++ = *source++;
-            }
+            return (span[offset++] << 24) | (span[offset++] << 16) | (span[offset++] << 8) | span[offset];
         }
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static unsafe int ReadBigEndianInt32(byte* buffer, int offset)
+        private static int ReadLittleEndianInt32(Span<byte> span, int offset)
         {
-            return (buffer[offset] << 24) | (buffer[offset + 1] << 16) | (buffer[offset + 2] << 8) | buffer[offset + 3];
-        }
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static unsafe int ReadLittleEndianInt32(byte* buffer, int offset)
-        {
-            return (buffer[offset]) | (buffer[offset + 1] << 8) | (buffer[offset + 2] << 16) | (buffer[offset + 3] << 24);
+            return (span[offset++]) | (span[offset++] << 8) | (span[offset++] << 16) | (span[offset] << 24);
         }
     }
 }
