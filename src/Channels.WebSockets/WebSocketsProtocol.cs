@@ -1,5 +1,6 @@
 ﻿using Channels.Text.Primitives;
 using System;
+using System.Binary;
 using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
 using System.Text;
@@ -16,7 +17,7 @@ namespace Channels.WebSockets
                             + "Connection: Upgrade\r\n"
                             + "Sec-WebSocket-Accept: "),
             StandardPostfixBytes = Encoding.ASCII.GetBytes("\r\n\r\n");
-        internal static Task CompleteHandshakeAsync(ref HttpRequest request, WebSocketConnection socket)
+        internal unsafe static Task CompleteHandshakeAsync(ref HttpRequest request, WebSocketConnection socket)
         {
             var key = request.Headers.GetRaw("Sec-WebSocket-Key");
 
@@ -26,12 +27,14 @@ namespace Channels.WebSockets
 
             var buffer = connection.Output.Alloc(StandardPrefixBytes.Length +
                 ResponseTokenLength + StandardPostfixBytes.Length);
-            string hashBase64 = ComputeReply(key);
-            if (hashBase64.Length != ResponseTokenLength) throw new InvalidOperationException("Unexpected response key length");
-            WebSocketServer.WriteStatus($"Response token: {hashBase64}");
+
+            var hashBase64Buffer = stackalloc byte[ResponseTokenLength];
+            var hashBase64Span = new Span<byte>(hashBase64Buffer, ResponseTokenLength);
+            ComputeReply(key, hashBase64Span);
+            WebSocketServer.WriteStatus($"Response token: {hashBase64Span}");
 
             buffer.Write(StandardPrefixBytes);
-            WritableBufferExtensions.WriteAsciiString(ref buffer, hashBase64);
+            buffer.Write(hashBase64Span);
             buffer.Write(StandardPostfixBytes);
 
             return buffer.FlushAsync();
@@ -47,7 +50,7 @@ namespace Channels.WebSockets
                 || (value == (byte)'+')
                 || (value == (byte)'=');
         }
-        internal static string ComputeReply(ReadableBuffer key)
+        internal static void ComputeReply(ReadableBuffer key, Span<byte> destination)
         {
             //To prove that the handshake was received, the server has to take two
             //pieces of information and combine them to form a response.  The first
@@ -81,7 +84,8 @@ namespace Channels.WebSockets
             {
                 var hash = sha.ComputeHash(arr, 0,
                     ExpectedKeyLength + WebSocketKeySuffixBytes.Length);
-                return Convert.ToBase64String(hash);
+
+                Base64.Encode(hash, destination);
             }
         }
 
@@ -104,7 +108,7 @@ namespace Channels.WebSockets
             else if (payloadLength > 125)
             { // write as a 16-bit length
                 span[index++] = (byte)((mask != 0 ? 128 : 0) | 126);
-                span.Slice(index).Write((ushort)payloadLength >> 8);
+                span.Slice(index).Write((ushort)payloadLength);
                 index += 2;
             }
             else
