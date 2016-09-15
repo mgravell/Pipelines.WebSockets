@@ -28,7 +28,10 @@ namespace Channels.WebSockets
 
         public WebSocketServer()
         {
-            if (!BitConverter.IsLittleEndian) throw new NotSupportedException("This code has not been tested on big-engian architectures");
+            if (!BitConverter.IsLittleEndian)
+            {
+                throw new NotSupportedException("This code has not been tested on big-endian architectures");
+            }
         }
         public void Dispose() => Dispose(true);
         ~WebSocketServer() { Dispose(false); }
