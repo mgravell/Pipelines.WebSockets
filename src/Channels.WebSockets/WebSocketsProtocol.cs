@@ -93,24 +93,19 @@ namespace Channels.WebSockets
 
             int index = 0;
             var span = output.Memory;
+            
             span[index++] = (byte)(((int)flags & 240) | ((int)opCode & 15));
             if (payloadLength > ushort.MaxValue)
             { // write as a 64-bit length
                 span[index++] = (byte)((mask != 0 ? 128 : 0) | 127);
-                span[index++] = 0;
-                span[index++] = 0;
-                span[index++] = 0;
-                span[index++] = 0;
-                span[index++] = (byte)(payloadLength >> 24);
-                span[index++] = (byte)(payloadLength >> 16);
-                span[index++] = (byte)(payloadLength >> 8);
-                span[index++] = (byte)(payloadLength);
+                span.Slice(index).Write(payloadLength);
+                index += 8;
             }
             else if (payloadLength > 125)
             { // write as a 16-bit length
                 span[index++] = (byte)((mask != 0 ? 128 : 0) | 126);
-                span[index++] = (byte)(payloadLength >> 8);
-                span[index++] = (byte)(payloadLength);
+                span.Slice(index).Write((ushort)payloadLength >> 8);
+                index += 2;
             }
             else
             { // write in the header
@@ -118,10 +113,8 @@ namespace Channels.WebSockets
             }
             if (mask != 0)
             {
-                span[index++] = (byte)(mask >> 24);
-                span[index++] = (byte)(mask >> 16);
-                span[index++] = (byte)(mask >> 8);
-                span[index++] = (byte)(mask);
+                span.Slice(index).Write(mask);
+                index += 4;
             }
             output.CommitBytes(index);
         }
