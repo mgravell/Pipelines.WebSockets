@@ -131,23 +131,24 @@ namespace Channels.WebSockets
                 return false; // can't read that; frame takes at minimum two bytes
             }
 
-            var span = buffer.FirstSpan;
-            if (buffer.IsSingleSpan || span.Length >= MaxHeaderLength)
+            var firstSpan = buffer.FirstSpan;
+            if (buffer.IsSingleSpan || firstSpan.Length >= MaxHeaderLength)
             {
-                return TryReadFrameHeader(span.Length, span, ref buffer, out frame);
+                return TryReadFrameHeader(firstSpan.Length, firstSpan, ref buffer, out frame);
             }
             else
             {
                 // header is at most 14 bytes; can afford the stack for that - but note that if we aim for 16 bytes instead,
-                // we will usually benefit from using 2 qword copies (handled internally); very very small messages ('a') might
-                // have to use the slower version, but... meh
+                // we will usually benefit from using 2 qword copies
                 byte* header = stackalloc byte[16];
                 var slice = buffer.Slice(0, Math.Min(16, bytesAvailable));
-                slice.CopyTo(new Span<byte>(header, slice.Length));
+                var headerSpan = new Span<byte>(header, slice.Length);
+                slice.CopyTo(headerSpan);
+
                 // note that we're using the "slice" above to preview the header, but we
-                // still want to pass the original buffer down below, so that we can
+                // still want to pass the *original* buffer down below, so that we can
                 // check the overall length (payload etc)
-                return TryReadFrameHeader(slice.Length, new Span<byte>(header, slice.Length), ref buffer, out frame);
+                return TryReadFrameHeader(slice.Length, headerSpan, ref buffer, out frame);
             }
         }
         internal static bool TryReadFrameHeader(int inspectableBytes, Span<byte> header, ref ReadableBuffer buffer, out WebSocketsFrame frame)
