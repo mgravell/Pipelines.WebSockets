@@ -17,7 +17,7 @@ namespace Channels.WebSockets
                             + "Connection: Upgrade\r\n"
                             + "Sec-WebSocket-Accept: "),
             StandardPostfixBytes = Encoding.ASCII.GetBytes("\r\n\r\n");
-        internal unsafe static Task CompleteHandshakeAsync(ref HttpRequest request, WebSocketConnection socket)
+        internal static Task CompleteHandshakeAsync(ref HttpRequest request, WebSocketConnection socket)
         {
             var key = request.Headers.GetRaw("Sec-WebSocket-Key");
 
@@ -28,13 +28,10 @@ namespace Channels.WebSockets
             var buffer = connection.Output.Alloc(StandardPrefixBytes.Length +
                 ResponseTokenLength + StandardPostfixBytes.Length);
 
-            var hashBase64Buffer = stackalloc byte[ResponseTokenLength];
-            var hashBase64Span = new Span<byte>(hashBase64Buffer, ResponseTokenLength);
-            ComputeReply(key, hashBase64Span);
-            WebSocketServer.WriteStatus($"Response token: {hashBase64Span}");
-
             buffer.Write(StandardPrefixBytes);
-            buffer.Write(hashBase64Span);
+            buffer.Ensure(ResponseTokenLength);
+            ComputeReply(key, buffer.Memory); // RFC6455 logic to prove that we know how to web-socket
+            buffer.CommitBytes(ResponseTokenLength);
             buffer.Write(StandardPostfixBytes);
 
             return buffer.FlushAsync();
