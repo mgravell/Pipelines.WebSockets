@@ -29,8 +29,13 @@ namespace Channels.WebSockets
                 ResponseTokenLength + StandardPostfixBytes.Length);
 
             buffer.Write(StandardPrefixBytes);
+            // RFC6455 logic to prove that we know how to web-socket
             buffer.Ensure(ResponseTokenLength);
-            ComputeReply(key, buffer.Memory); // RFC6455 logic to prove that we know how to web-socket
+            int bytes = ComputeReply(key, buffer.Memory);
+            if (bytes != ResponseTokenLength)
+            {
+                throw new InvalidOperationException($"Incorrect response token length; expected {ResponseTokenLength}, got {bytes}");
+            }
             buffer.CommitBytes(ResponseTokenLength);
             buffer.Write(StandardPostfixBytes);
 
@@ -38,7 +43,7 @@ namespace Channels.WebSockets
         }
         static readonly byte[] WebSocketKeySuffixBytes = Encoding.ASCII.GetBytes("258EAFA5-E914-47DA-95CA-C5AB0DC85B11");
 
-        internal static void ComputeReply(ReadableBuffer key, Span<byte> destination)
+        internal static int ComputeReply(ReadableBuffer key, Span<byte> destination)
         {
             //To prove that the handshake was received, the server has to take two
             //pieces of information and combine them to form a response.  The first
@@ -73,7 +78,7 @@ namespace Channels.WebSockets
                 var hash = sha.ComputeHash(arr, 0,
                     ExpectedKeyLength + WebSocketKeySuffixBytes.Length);
 
-                Base64.Encode(hash, destination);
+                return Base64.Encode(hash, destination);
             }
         }
 
