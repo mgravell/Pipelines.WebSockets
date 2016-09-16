@@ -17,11 +17,11 @@ namespace Channels.WebSockets
             this.count = count;
         }
 
-        void IMessageWriter.Write(ref WritableBuffer buffer)
+        void IMessageWriter.WritePayload(ref WritableBuffer buffer)
         {
             if (count != 0) buffer.Write(new Span<byte>(value, offset, count));
         }
 
-        int IMessageWriter.GetTotalBytes() => count;
+        int IMessageWriter.GetPayloadLength() => count;
     }
 }

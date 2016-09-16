@@ -11,12 +11,12 @@ namespace Channels.WebSockets
         {
             this.value = value;
             this.totalBytes = value.Length == 0 ? 0 : -1;
-            if (preComputeLength) GetTotalBytes();
+            if (preComputeLength) GetPayloadLength();
         }
-        void IMessageWriter.Write(ref WritableBuffer buffer)
+        void IMessageWriter.WritePayload(ref WritableBuffer buffer)
             => WritableBufferExtensions.WriteUtf8String(ref buffer, value);
 
-        public int GetTotalBytes()
+        public int GetPayloadLength()
         {
             // lazily calculate
             return totalBytes >= 0 ? totalBytes : (totalBytes = encoding.GetByteCount(value));

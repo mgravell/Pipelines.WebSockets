@@ -333,19 +333,19 @@ namespace Channels.WebSockets
             WebSocketsFrame.FrameFlags flags, ref T message)
             where T : struct, IMessageWriter
         {
-            int payloadLength = message.GetTotalBytes();
+            int payloadLength = message.GetPayloadLength();
             var buffer = connection.Connection.Output.Alloc(MaxHeaderLength + payloadLength);
             int mask = connection.ConnectionType == ConnectionType.Client ? CreateMask() : 0;
             WriteFrameHeader(ref buffer, WebSocketsFrame.FrameFlags.IsFinal, opCode, payloadLength, mask);
             if (payloadLength != 0)
             {
-                if (mask == 0) { message.Write(ref buffer); }
+                if (mask == 0) { message.WritePayload(ref buffer); }
                 else
                 {
-                    var start = buffer.AsReadableBuffer().End;
-                    message.Write(ref buffer);
-                    var slice = buffer.AsReadableBuffer().Slice(start); // note that this is a different AsReadableBuffer; call twice is good
-                    WebSocketsFrame.ApplyMask(ref slice, mask);
+                    var payloadStart = buffer.AsReadableBuffer().End;
+                    message.WritePayload(ref buffer);
+                    var payload = buffer.AsReadableBuffer().Slice(payloadStart); // note that this is a different AsReadableBuffer; call twice is good
+                    WebSocketsFrame.ApplyMask(ref payload, mask);
                 }
             }
             return buffer.FlushAsync();

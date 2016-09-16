@@ -115,13 +115,13 @@ namespace Channels.WebSockets
         private static readonly byte[] NilBytes = new byte[0];
         public byte[] GetBytes()
         {
-            int len = GetTotalBytes();
+            int len = GetPayloadLength();
             if (len == 0) return NilBytes;
 
             ApplyMask();
             return buffer.ToArray();
         }
-        public int GetTotalBytes()
+        public int GetPayloadLength()
         {
             var buffers = this.buffers;
             if (buffers == null) return buffer.Length;
@@ -130,7 +130,7 @@ namespace Channels.WebSockets
             return count;
         }
 
-        void IMessageWriter.Write(ref WritableBuffer destination)
+        void IMessageWriter.WritePayload(ref WritableBuffer destination)
         {
             var buffers = this.buffers;
             if (buffers == null)

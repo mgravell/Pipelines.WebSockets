@@ -24,7 +24,7 @@ namespace SampleServer
             {
                 if (logging)
                 {
-                    Console.WriteLine($"Received {message.GetTotalBytes()} bytes: {message.GetText()} (final: {message.IsFinal})");
+                    Console.WriteLine($"Received {message.GetPayloadLength()} bytes: {message.GetText()} (final: {message.IsFinal})");
                 }
                 return base.OnTextAsync(connection, ref message);
             }
@@ -578,7 +578,7 @@ namespace SampleServer
                 if (logging)
                 {
                     var message = msg.GetText();
-                    Console.WriteLine($"client {named.Id} received text, {msg.GetTotalBytes()} bytes, final: {msg.IsFinal}: {message}");
+                    Console.WriteLine($"client {named.Id} received text, {msg.GetPayloadLength()} bytes, final: {msg.IsFinal}: {message}");
                 }
                 return null;
             };
