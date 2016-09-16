@@ -342,7 +342,10 @@ namespace Channels.WebSockets
                 if (mask == 0) { message.Write(ref buffer); }
                 else
                 {
-                    throw new NotImplementedException("Masked messages with payload... damn, that gets awkward");
+                    var start = buffer.AsReadableBuffer().End;
+                    message.Write(ref buffer);
+                    var slice = buffer.AsReadableBuffer().Slice(start); // note that this is a different AsReadableBuffer; call twice is good
+                    WebSocketsFrame.ApplyMask(ref slice, mask);
                 }
             }
             return buffer.FlushAsync();
