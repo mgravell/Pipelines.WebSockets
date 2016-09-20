@@ -1,4 +1,5 @@
-﻿using Channels.Networking.Libuv;
+﻿using Channels;
+using Channels.Networking.Libuv;
 using Channels.Networking.Sockets;
 using Channels.Text.Primitives;
 using System;
@@ -153,8 +154,8 @@ namespace Channels.WebSockets
                 {
                     WebSocketConnection tmp;
                     if (socket != null) connections.TryRemove(socket, out tmp);
-                    try { connection.Output.CompleteWriting(); } catch { }
-                    try { connection.Input.CompleteReading(); } catch { }
+                    try { connection.Output.Complete(); } catch { }
+                    try { connection.Input.Complete(); } catch { }
                 }
             }
         }
@@ -300,7 +301,7 @@ namespace Channels.WebSockets
 
                     try
                     {
-                        if (buffer.IsEmpty && _input.Completion.IsCompleted)
+                        if (buffer.IsEmpty && _input.Reading.IsCompleted)
                         {
                             throw new EndOfStreamException();
                         }
@@ -426,7 +427,7 @@ namespace Channels.WebSockets
                     }
                     finally
                     {
-                        buffer.Consumed(consumed);
+                        _input.Advance(consumed);
                     }
                 }
                 var result = new HttpRequest(Method, Path, HttpVersion, Headers);

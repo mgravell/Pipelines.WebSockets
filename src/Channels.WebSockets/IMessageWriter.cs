@@ -2,7 +2,7 @@
 {
     internal interface IMessageWriter
     {
-        void WritePayload(ref WritableBuffer buffer);
+        void WritePayload(WritableBuffer buffer);
         int GetPayloadLength();
     }
 }

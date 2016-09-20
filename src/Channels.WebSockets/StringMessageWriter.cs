@@ -13,8 +13,8 @@ namespace Channels.WebSockets
             this.totalBytes = value.Length == 0 ? 0 : -1;
             if (preComputeLength) GetPayloadLength();
         }
-        void IMessageWriter.WritePayload(ref WritableBuffer buffer)
-            => WritableBufferExtensions.WriteUtf8String(ref buffer, value);
+        void IMessageWriter.WritePayload(WritableBuffer buffer)
+            => buffer.WriteUtf8String(value);
 
         public int GetPayloadLength()
         {

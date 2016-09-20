@@ -30,7 +30,7 @@ namespace SampleServer
                 {
                     var buffer = connection.Output.Alloc();
                     Console.WriteLine($"[client] sending {line.Length} bytes...");
-                    WritableBufferExtensions.WriteAsciiString(ref buffer, line);
+                    buffer.WriteAsciiString(line);
                     return buffer.FlushAsync();
                 }
             }
@@ -57,14 +57,14 @@ namespace SampleServer
                 while (true)
                 {
                     var buffer = await connection.Input.ReadAsync();
-                    if (buffer.IsEmpty && (connection == null || connection.Input.Completion.IsCompleted))
+                    if (buffer.IsEmpty && (connection == null || connection.Input.Reading.IsCompleted))
                     {
                         Console.WriteLine("[client] input ended");
                         break;
                     }
 
                     var s = buffer.GetAsciiString();
-                    buffer.Consumed();
+                    connection.Input.Advance(buffer.End, buffer.End);
 
                     Console.Write("[client] received: ");
                     Console.WriteLine(s);
@@ -97,8 +97,8 @@ namespace SampleServer
         private void Close(UvTcpConnection connection, Exception error = null)
         {
             Console.WriteLine("[client] closing connection...");
-            connection.Input.CompleteReading(error);
-            connection.Output.CompleteWriting(error);
+            connection.Input.Complete(error);
+            connection.Output.Complete(error);
             Console.WriteLine("[client] connection closed");
         }
     }

@@ -59,7 +59,7 @@ namespace Channels.WebSockets
                 var buffer = await connection.Input.ReadAsync();
                 try
                 {
-                    if (buffer.IsEmpty && connection.Input.Completion.IsCompleted)
+                    if (buffer.IsEmpty && connection.Input.Reading.IsCompleted)
                     {
                         break; // that's all, folks
                     }
@@ -97,7 +97,7 @@ namespace Channels.WebSockets
                 }
                 finally
                 {
-                    buffer.Consumed(buffer.Start, buffer.End);
+                    connection.Input.Advance(buffer.Start, buffer.End);
                 }
             }
         }
@@ -300,8 +300,8 @@ namespace Channels.WebSockets
         internal void Close(Exception error = null)
         {
             isClosed = true;
-            connection.Output.CompleteWriting(error);
-            connection.Input.CompleteReading(error);
+            connection.Output.Complete(error);
+            connection.Input.Complete(error);
         }
         private void CheckCanSend()
         {

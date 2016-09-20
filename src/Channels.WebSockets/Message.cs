@@ -130,7 +130,7 @@ namespace Channels.WebSockets
             return count;
         }
 
-        void IMessageWriter.WritePayload(ref WritableBuffer destination)
+        void IMessageWriter.WritePayload(WritableBuffer destination)
         {
             var buffers = this.buffers;
             if (buffers == null)

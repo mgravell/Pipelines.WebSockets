@@ -60,7 +60,7 @@ namespace SampleServer
                     {
                         Console.WriteLine("[server] await completed");
                     }
-                    if (request.IsEmpty && connection.Input.Completion.IsCompleted) break;
+                    if (request.IsEmpty && connection.Input.Reading.IsCompleted) break;
 
                     int len = request.Length;
                     Console.WriteLine($"[server] echoing {len} bytes...");
@@ -68,7 +68,7 @@ namespace SampleServer
                     response.Append(ref request);
                     await response.FlushAsync();
                     Console.WriteLine($"[server] echoed");
-                    request.Consumed();
+                    connection.Input.Advance(request.End);
                 }
                 Close(connection);          
             }
@@ -89,8 +89,8 @@ namespace SampleServer
         private void Close(UvTcpConnection connection, Exception error = null)
         {
             Console.WriteLine("[server] closing connection...");
-            connection.Output.CompleteWriting(error);
-            connection.Input.CompleteReading(error);
+            connection.Output.Complete(error);
+            connection.Input.Complete(error);
             Console.WriteLine("[server] connection closed");
         }
 

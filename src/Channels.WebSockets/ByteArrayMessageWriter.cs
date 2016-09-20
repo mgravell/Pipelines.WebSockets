@@ -17,7 +17,7 @@ namespace Channels.WebSockets
             this.count = count;
         }
 
-        void IMessageWriter.WritePayload(ref WritableBuffer buffer)
+        void IMessageWriter.WritePayload(WritableBuffer buffer)
         {
             if (count != 0) buffer.Write(new Span<byte>(value, offset, count));
         }

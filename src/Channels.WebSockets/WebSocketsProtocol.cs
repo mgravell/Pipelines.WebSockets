@@ -63,9 +63,9 @@ namespace Channels.WebSockets
             // write the outbound request portion of the handshake
             var output = channel.Output.Alloc();
             output.Write(GET);
-            WritableBufferExtensions.WriteAsciiString(ref output, uri.PathAndQuery);
+            output.WriteAsciiString(uri.PathAndQuery);
             output.Write(HTTP_Host);
-            WritableBufferExtensions.WriteAsciiString(ref output, uri.Host);
+            output.WriteAsciiString(uri.Host);
             output.Write(UpgradeConnectionKey);
 
             byte[] challengeKey = new byte[WebSocketProtocol.SecResponseLength];
@@ -84,14 +84,14 @@ namespace Channels.WebSockets
 
             if (!string.IsNullOrWhiteSpace(origin))
             {
-                WritableBufferExtensions.WriteAsciiString(ref output, "Origin: ");
-                WritableBufferExtensions.WriteAsciiString(ref output, origin);
+                output.WriteAsciiString("Origin: ");
+                output.WriteAsciiString(origin);
                 output.Write(CRLF);
             }
             if (!string.IsNullOrWhiteSpace(protocol))
             {
-                WritableBufferExtensions.WriteAsciiString(ref output, "Sec-WebSocket-Protocol: ");
-                WritableBufferExtensions.WriteAsciiString(ref output, protocol);
+                output.WriteAsciiString("Sec-WebSocket-Protocol: ");
+                output.WriteAsciiString(protocol);
                 output.Write(CRLF);
             }
             output.Write(WebSocketVersion);
@@ -299,7 +299,7 @@ namespace Channels.WebSockets
                         frame = default(WebSocketsFrame);
                         return false;
                     }
-                    int big = ReadBigEndianInt32(header, 2), little = ReadBigEndianInt32(header, 6);
+                    int big = header.Slice(2).ReadBigEndian<int>(), little = header.Slice(6).ReadBigEndian<int>();
                     if (big != 0 || little < 0) throw new ArgumentOutOfRangeException(); // seriously, we're not going > 2GB
                     payloadLength = little;
                     maskOffset = 10;
@@ -323,7 +323,7 @@ namespace Channels.WebSockets
 
 
             frame = new WebSocketsFrame(header[0], masked,
-                masked ? ReadLittleEndianInt32(header, maskOffset) : 0,
+                masked ? header.Slice(maskOffset).ReadLittleEndian<int>() : 0,
                 payloadLength);
             buffer = buffer.Slice(headerLength); // header is fully consumed now
             return true;
@@ -339,27 +339,16 @@ namespace Channels.WebSockets
             WriteFrameHeader(ref buffer, WebSocketsFrame.FrameFlags.IsFinal, opCode, payloadLength, mask);
             if (payloadLength != 0)
             {
-                if (mask == 0) { message.WritePayload(ref buffer); }
+                if (mask == 0) { message.WritePayload(buffer); }
                 else
                 {
                     var payloadStart = buffer.AsReadableBuffer().End;
-                    message.WritePayload(ref buffer);
+                    message.WritePayload(buffer);
                     var payload = buffer.AsReadableBuffer().Slice(payloadStart); // note that this is a different AsReadableBuffer; call twice is good
                     WebSocketsFrame.ApplyMask(ref payload, mask);
                 }
             }
             return buffer.FlushAsync();
-        }
-        
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static int ReadBigEndianInt32(Span<byte> span, int offset)
-        {
-            return (span[offset++] << 24) | (span[offset++] << 16) | (span[offset++] << 8) | span[offset];
-        }
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static int ReadLittleEndianInt32(Span<byte> span, int offset)
-        {
-            return (span[offset++]) | (span[offset++] << 8) | (span[offset++] << 16) | (span[offset] << 24);
         }
     }
 }
