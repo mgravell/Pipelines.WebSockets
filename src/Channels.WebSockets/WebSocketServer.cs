@@ -99,11 +99,11 @@ namespace Channels.WebSockets
                 uvListener.Start();
             }
         }
-        public void StartManagedSockets(IPAddress ip, int port)
+        public void StartManagedSockets(IPAddress ip, int port, ChannelFactory channelFactory = null)
         {
             if (uvListener == null && socketListener == null)
             {
-                socketListener = new SocketListener();
+                socketListener = new SocketListener(channelFactory);
                 socketListener.OnConnection(OnConnection);
                 socketListener.Start(new IPEndPoint(ip, port));
             }
@@ -141,11 +141,11 @@ namespace Channels.WebSockets
                     WriteStatus(ConnectionType.Server, "Processing incoming frames...");
                     await socket.ProcessIncomingFramesAsync(this);
                     WriteStatus(ConnectionType.Server, "Exiting...");
-                    socket.Close();
+                    await socket.CloseAsync();
                 }
                 catch (Exception ex)
                 {// meh, bye bye broken connection
-                    try { socket?.Close(ex); } catch { }
+                    try { socket?.Dispose(); } catch { }
                     WriteStatus(ConnectionType.Server, ex.StackTrace);
                     WriteStatus(ConnectionType.Server, ex.GetType().Name);
                     WriteStatus(ConnectionType.Server, ex.Message);

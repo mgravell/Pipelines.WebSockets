@@ -54,7 +54,7 @@ namespace Channels.WebSockets
         public object UserState { get; set; }
         internal async Task ProcessIncomingFramesAsync(WebSocketServer server)
         {
-            while (!IsClosed)
+            while (true)
             {
                 var buffer = await connection.Input.ReadAsync();
                 try
@@ -178,6 +178,7 @@ namespace Channels.WebSockets
         }
         private Task OnConectionFrameReceivedImplAsync(WebSocketsFrame.OpCodes opCode, ref Message message)
         {
+            WebSocketServer.WriteStatus(connectionType, $"Processing {opCode}, {message.GetPayloadLength()} bytes...");
             switch (opCode)
             {
                 case WebSocketsFrame.OpCodes.Binary:
@@ -185,7 +186,12 @@ namespace Channels.WebSockets
                 case WebSocketsFrame.OpCodes.Text:
                     return OnTextAsync(ref message);
                 case WebSocketsFrame.OpCodes.Close:
+                    connection.Input.Complete();
                     // respond to a close in-kind (2-handed close)
+                    try { Closed?.Invoke(); } catch { }
+
+                    if (connection.Output.Writing.IsCompleted) return TaskResult.True; // already closed
+
                     return SendAsync(WebSocketsFrame.OpCodes.Close, ref message);
                 case WebSocketsFrame.OpCodes.Ping:
                     // by default, respond to a ping with a matching pong
@@ -283,35 +289,28 @@ namespace Channels.WebSockets
         }
         public Task CloseAsync(string message = null)
         {
-            CheckCanSend(); // seems quite likely to be in doubt here...
+            if (connection.Output.Writing.IsCompleted) return TaskResult.True;
+
             var msg = MessageWriter.Create(message);
-            return SendAsync(WebSocketsFrame.OpCodes.Ping, ref msg);
+            var task = SendAsync(WebSocketsFrame.OpCodes.Close, ref msg);
+            return task;
         }
         internal Task SendAsync(WebSocketsFrame.OpCodes opCode, ref Message message, WebSocketsFrame.FrameFlags flags = WebSocketsFrame.FrameFlags.IsFinal)
         {
-            CheckCanSend();
+            if(connection.Output.Writing.IsCompleted)
+            {
+                throw new InvalidOperationException("Connection has been closed");
+            }
             return SendAsyncImpl(opCode, message, flags);
         }
-        public bool IsClosed => isClosed;// TODO: flags bool
 
         public bool BufferFragments { get; set; } // TODO: flags bool
+        public bool IsClosed => connection.Output.Writing.IsCompleted || connection.Input.Reading.IsCompleted;
 
-        private volatile bool isClosed;
-        internal void Close(Exception error = null)
-        {
-            isClosed = true;
-            connection.Output.Complete(error);
-            connection.Input.Complete(error);
-        }
-        private void CheckCanSend()
-        {
-            if (isClosed) throw new InvalidOperationException();
-        }
-
+        public event Action Closed;
 
         internal Task SendAsync<T>(WebSocketsFrame.OpCodes opCode, ref T message, WebSocketsFrame.FrameFlags flags = WebSocketsFrame.FrameFlags.IsFinal) where T : struct, IMessageWriter
         {
-            CheckCanSend();
             return SendAsyncImpl(opCode, message, flags);
         }
         private async Task SendAsyncImpl<T>(WebSocketsFrame.OpCodes opCode, T message, WebSocketsFrame.FrameFlags flags) where T : struct, IMessageWriter
@@ -326,9 +325,9 @@ namespace Channels.WebSockets
             }
             try
             {
-                WebSocketServer.WriteStatus(ConnectionType, $"Writing {opCode} message...");
+                WebSocketServer.WriteStatus(ConnectionType, $"Writing {opCode} message ({message.GetPayloadLength()} bytes)...");
                 await WebSocketProtocol.WriteAsync(this, opCode, flags, ref message);
-                if (opCode == WebSocketsFrame.OpCodes.Close) Close();
+                if (opCode == WebSocketsFrame.OpCodes.Close) connection.Output.Complete();
             }
             finally
             {
@@ -381,6 +380,9 @@ namespace Channels.WebSockets
             BinaryAsync = TextAsync = null;
             ((IDisposable)writeLock)?.Dispose();
             ClearBacklog();
+            connection.Input.Complete();
+            connection.Output.Complete();
+            connection.Dispose();
         }
     }
 

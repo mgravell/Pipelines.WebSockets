@@ -3,62 +3,84 @@ using System;
 using System.Collections.Generic;
 using System.Text;
 using System.Threading;
+using System.Threading.Tasks;
 
 namespace Channels.WebSockets
 {
     public struct Message : IMessageWriter
     {
-        private ReadableBuffer buffer;
-        private List<ReadableBuffer> buffers;
-        private int mask;
-        private string text;
+        private ReadableBuffer _buffer;
+        private List<ReadableBuffer> _buffers;
+        private int _mask;
+        private string _text;
         public bool IsFinal { get; }
         internal Message(ReadableBuffer buffer, int mask, bool isFinal)
         {
-            this.buffer = buffer;
-            this.mask = mask;
-            text = null;
+            this._buffer = buffer;
+            this._mask = mask;
+            _text = null;
             IsFinal = isFinal;
-            buffers = null;
+            _buffers = null;
         }
-        internal Message(List<ReadableBuffer> buffers)
+
+        internal Task WriteAsync(Channel output)
         {
-            mask = 0;
-            text = null;
-            IsFinal = true;
-            if (buffers.Count == 1) // can simplify
+            var write = output.Alloc();
+            if(_buffers != null)
             {
-                buffer = buffers[0];
-                this.buffers = null;
+                foreach (var buffer in _buffers)
+                {
+                    var tmp = buffer;
+                    write.Append(ref tmp);
+                }
             }
             else
             {
-                buffer = default(ReadableBuffer);
-                this.buffers = buffers;
+                ApplyMask();
+                write.Append(ref _buffer);
+            }
+            return write.FlushAsync();
+
+        }
+
+        internal Message(List<ReadableBuffer> buffers)
+        {
+            _mask = 0;
+            _text = null;
+            IsFinal = true;
+            if (buffers.Count == 1) // can simplify
+            {
+                _buffer = buffers[0];
+                this._buffers = null;
+            }
+            else
+            {
+                _buffer = default(ReadableBuffer);
+                this._buffers = buffers;
             }
         }
         private void ApplyMask()
         {
-            if (mask != 0)
+            if (_mask != 0)
             {
-                WebSocketsFrame.ApplyMask(ref buffer, mask);
-                mask = 0;
+                WebSocketsFrame.ApplyMask(ref _buffer, _mask);
+                _mask = 0;
             }
         }
         public override string ToString() => GetText();
         public string GetText()
         {
-            if (text != null) return text;
+            if (_text != null) return _text;
 
-            var buffers = this.buffers;
+            var buffers = this._buffers;
             if (buffers == null)
             {
-                if (buffer.Length == 0) return text = "";
+                if (_buffer.Length == 0) return _text = "";
 
                 ApplyMask();
-                return text = buffer.GetUtf8String();
+                return _text = _buffer.GetUtf8String();
             }
-            return text = GetText(buffers);
+            return _text = GetText(buffers);
         }
 
         private static readonly Encoding Utf8Encoding = Encoding.UTF8;
@@ -119,12 +141,12 @@ namespace Channels.WebSockets
             if (len == 0) return NilBytes;
 
             ApplyMask();
-            return buffer.ToArray();
+            return _buffer.ToArray();
         }
         public int GetPayloadLength()
         {
-            var buffers = this.buffers;
-            if (buffers == null) return buffer.Length;
+            var buffers = this._buffers;
+            if (buffers == null) return _buffer.Length;
             int count = 0;
             foreach (var buffer in buffers) count += buffer.Length;
             return count;
@@ -132,11 +154,11 @@ namespace Channels.WebSockets
 
         void IMessageWriter.WritePayload(WritableBuffer destination)
         {
-            var buffers = this.buffers;
+            var buffers = this._buffers;
             if (buffers == null)
             {
                 ApplyMask();
-                destination.Append(ref buffer);
+                destination.Append(ref _buffer);
             }
             else
             {

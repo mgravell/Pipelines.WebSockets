@@ -18,7 +18,7 @@ namespace SampleServer
 {
     public static class Program
     {
-        class MyServer : WebSocketServer
+        class EchoWebSocketServer : WebSocketServer
         {
             protected override Task OnTextAsync(WebSocketConnection connection, ref Message message)
             {
@@ -31,7 +31,108 @@ namespace SampleServer
         }
         static bool logging = true;
        
-        static int Main()
+        private async static void Echo(IChannel channel)
+        {
+            try
+            {
+                while (true)
+                {
+                    ReadableBuffer request = await channel.Input.ReadAsync();
+                    if (request.IsEmpty && channel.Input.Reading.IsCompleted)
+                    {
+                        channel.Input.Advance(request.End);
+                        break;
+                    }
+
+                    int len = request.Length;
+                    var response = channel.Output.Alloc();
+                    response.Append(ref request);
+                    await response.FlushAsync();
+                    channel.Input.Advance(request.End);
+                }
+                channel.Input.Complete();
+                channel.Output.Complete();
+            }
+            catch (Exception ex)
+            {
+                if (!(channel.Input?.Reading?.IsCompleted ?? true)) channel.Input.Complete(ex);
+                if (!(channel.Output?.Writing?.IsCompleted ?? true)) channel.Output.Complete(ex);
+            }
+            finally
+            {
+                channel?.Dispose();
+            }
+        }
+
+        class WrappedEchoWebSocketServer : WebSocketServer
+        {
+            private ChannelFactory _factory;
+            public WrappedEchoWebSocketServer(ChannelFactory factory)
+            {
+                _factory = factory;
+            }
+            protected override Task OnHandshakeCompleteAsync(WebSocketConnection connection)
+            {
+                WriteStatus("[server] Wrapping as channel...");
+                var channel = new WebSocketChannel(connection, _factory);
+                WriteStatus("[server] Initiating channel-based echo...");
+                Echo(channel);
+                return base.OnHandshakeCompleteAsync(connection);
+            }
+
+        }
+        static void Main()
+        {
+            using (var factory = new ChannelFactory())
+            using (var server = new WrappedEchoWebSocketServer(factory))
+            {
+                Console.WriteLine("Starting server...");
+                server.StartManagedSockets(IPAddress.Loopback, 6080, factory);
+                RunClientAsync(factory);
+
+                Console.WriteLine("Press any key");
+                Console.ReadKey();
+            }
+        }
+        static async void RunClientAsync(ChannelFactory channelFactory)
+        {
+            Console.WriteLine("Creating client...");
+            using (var client = await WebSocketConnection.ConnectAsync("ws://127.0.0.1:6080/", channelFactory: channelFactory))
+            {
+                Console.WriteLine("Wrapping client as channel...");
+                var channel = new WebSocketChannel(client, channelFactory);
+
+                string message = "Hello world!";
+                Console.WriteLine($"Sending '{message}' via a wrapped channel...");
+                string reply = await SendMessageAndWaitForReply(channel, message);
+                Console.WriteLine($"Got back: '{reply}'");
+            }
+        }
+        private static async Task<string> SendMessageAndWaitForReply(IChannel channel, string message)
+        {
+            var output = channel.Output.Alloc();
+            output.WriteUtf8String(message);
+            await output.FlushAsync();
+            channel.Output.Complete();
+
+            while (true)
+            {
+                var input = await channel.Input.ReadAsync();
+                // wait for the end of the data before processing anything
+                if (channel.Input.Reading.IsCompleted)
+                {
+                    string reply = input.GetUtf8String();
+                    channel.Input.Advance(input.End);
+                    return reply;
+                }
+                else
+                {
+                    channel.Input.Advance(input.Start, input.End);
+                }
+            }
+        }
+
+        static int Main2()
         {
             try
             {
@@ -84,12 +185,12 @@ namespace SampleServer
 
         private static void RunBasicEchoServer()
         {
-            using (var server = new EchoServer())
+            using (var server = new EchoWebSocketServer())
             using (var client = new TrivialClient())
             {
                 var endpoint = new IPEndPoint(IPAddress.Loopback, 5002);
                 Console.WriteLine($"Starting server on {endpoint}...");
-                server.Start(endpoint);
+                server.StartManagedSockets(IPAddress.Loopback, 5002);
                 Console.WriteLine($"Server running");
 
                 Thread.Sleep(1000); // let things spin up
@@ -107,14 +208,14 @@ namespace SampleServer
                     switch(line)
                     {
                         case "kill":
-                            server.CloseAllConnections();
+                            server.CloseAllAsync();
                             client.Close();
                             break;
                         case "killc":
                             client.Close();
                             break;
                         case "kills":
-                            server.CloseAllConnections();
+                            server.CloseAllAsync();
                             break;
                         default:
                             client.SendAsync(line).FireOrForget();
@@ -159,7 +260,7 @@ namespace SampleServer
         }
         public static void RunWebSocketServer(ChannelProvider provider)
         {
-            using (var server = new MyServer())
+            using (var server = new EchoWebSocketServer())
             {
                 switch(provider)
                 {
