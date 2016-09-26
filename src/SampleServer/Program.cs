@@ -81,7 +81,7 @@ namespace SampleServer
             }
 
         }
-        static void Main()
+        static void Main2()
         {
             using (var factory = new ChannelFactory())
             using (var server = new WrappedEchoWebSocketServer(factory))
@@ -132,7 +132,7 @@ namespace SampleServer
             }
         }
 
-        static int Main2()
+        static int Main()
         {
             try
             {

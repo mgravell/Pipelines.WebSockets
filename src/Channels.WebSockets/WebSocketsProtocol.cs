@@ -35,7 +35,7 @@ namespace Channels.WebSockets
             {
                 throw new InvalidOperationException($"Incorrect response token length; expected {SecResponseLength}, got {bytes}");
             }
-            buffer.CommitBytes(SecResponseLength);
+            buffer.Advance(SecResponseLength);
             buffer.Write(StandardPostfixBytes);
 
             return buffer.FlushAsync();
@@ -77,9 +77,9 @@ namespace Channels.WebSockets
             // as a source to compute the expected bytes, and store them back
             // into challengeKey; sneaky!
             WebSocketProtocol.ComputeReply(
-                output.Memory.Slice(0, WebSocketProtocol.SecRequestLength),
+                (Span<byte>)output.Memory.Slice(0, WebSocketProtocol.SecRequestLength),
                 challengeKey);
-            output.CommitBytes(bytesWritten);
+            output.Advance(bytesWritten);
             output.Write(CRLF);
 
             if (!string.IsNullOrWhiteSpace(origin))
@@ -153,7 +153,7 @@ namespace Channels.WebSockets
         {
             if(key.IsSingleSpan)
             {
-                return ComputeReply(key.FirstSpan, destination);
+                return ComputeReply((Span<byte>)key.First, destination);
             }
             if (key.Length != SecRequestLength) throw new ArgumentException("Invalid key length", nameof(key));
             byte* ptr = stackalloc byte[SecRequestLength];
@@ -205,7 +205,7 @@ namespace Channels.WebSockets
             output.Ensure(MaxHeaderLength);
 
             int index = 0;
-            var span = output.Memory;
+            Span<byte> span = output.Memory;
             
             span[index++] = (byte)(((int)flags & 240) | ((int)opCode & 15));
             if (payloadLength > ushort.MaxValue)
@@ -230,7 +230,7 @@ namespace Channels.WebSockets
                 span.Slice(index).Write(mask);
                 index += 4;
             }
-            output.CommitBytes(index);
+            output.Advance(index);
         }
 
         // note assumes little endian architecture
@@ -255,7 +255,7 @@ namespace Channels.WebSockets
                 return false; // can't read that; frame takes at minimum two bytes
             }
 
-            var firstSpan = buffer.FirstSpan;
+            var firstSpan = buffer.First;
             if (buffer.IsSingleSpan || firstSpan.Length >= MaxHeaderLength)
             {
                 return TryReadFrameHeader(firstSpan.Length, firstSpan, ref buffer, out frame);
