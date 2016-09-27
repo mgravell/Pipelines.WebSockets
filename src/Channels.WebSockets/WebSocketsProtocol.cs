@@ -77,7 +77,7 @@ namespace Channels.WebSockets
             // as a source to compute the expected bytes, and store them back
             // into challengeKey; sneaky!
             WebSocketProtocol.ComputeReply(
-                (Span<byte>)output.Memory.Slice(0, WebSocketProtocol.SecRequestLength),
+                output.Memory.Slice(0, WebSocketProtocol.SecRequestLength).Span,
                 challengeKey);
             output.Advance(bytesWritten);
             output.Write(CRLF);
@@ -153,7 +153,7 @@ namespace Channels.WebSockets
         {
             if(key.IsSingleSpan)
             {
-                return ComputeReply((Span<byte>)key.First, destination);
+                return ComputeReply(key.First.Span, destination);
             }
             if (key.Length != SecRequestLength) throw new ArgumentException("Invalid key length", nameof(key));
             byte* ptr = stackalloc byte[SecRequestLength];
@@ -205,7 +205,7 @@ namespace Channels.WebSockets
             output.Ensure(MaxHeaderLength);
 
             int index = 0;
-            Span<byte> span = output.Memory;
+            var span = output.Memory.Span;
             
             span[index++] = (byte)(((int)flags & 240) | ((int)opCode & 15));
             if (payloadLength > ushort.MaxValue)

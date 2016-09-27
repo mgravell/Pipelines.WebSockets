@@ -489,7 +489,7 @@ namespace Channels.WebSockets
             int charIndex = 0;
             foreach (var memory in bufferUnknownCase)
             {
-                Span<byte> span = memory;
+                var span = memory.Span;
                 for (int spanIndex = 0; spanIndex < span.Length; spanIndex++)
                 {
                     char x = (char)span[spanIndex], y = valueLowerCase[charIndex++];
