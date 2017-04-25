@@ -1,0 +1,38 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>netstandard1.3</TargetFramework>
+    <DefineConstants>$(DefineConstants);LOGGING</DefineConstants>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <AssemblyName>Pipelines.WebSockets</AssemblyName>
+    <AssemblyOriginatorKeyFile>../../tools/Key.snk</AssemblyOriginatorKeyFile>
+    <SignAssembly>true</SignAssembly>
+    <PublicSign Condition=" '$(OS)' != 'Windows_NT' ">true</PublicSign>
+    <PackageId>Pipelines.WebSockets</PackageId>
+    <NetStandardImplicitPackageVersion>1.6.1</NetStandardImplicitPackageVersion>
+    <CoreFxVersion>4.3.0</CoreFxVersion>
+    <CoreFxLabVersion>0.1.0-e170425-2</CoreFxLabVersion>
+    <CoreFxPreviewVersion>4.4.0-preview1-25219-04</CoreFxPreviewVersion>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="System.Threading.Tasks.Extensions" Version="$(CoreFxVersion)" />
+    <PackageReference Include="System.Security.Cryptography.Algorithms" Version="$(CoreFxVersion)" />
+  </ItemGroup>
+  <ItemGroup Condition=" '$(TargetFramework)' == 'netstandard1.3' ">
+    <PackageReference Include="System.Threading.Overlapped" Version="$(CoreFxVersion)" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="System.Numerics.Vectors" Version="$(CoreFxPreviewVersion)" />
+    <PackageReference Include="System.Runtime.CompilerServices.Unsafe" Version="$(CoreFxPreviewVersion)" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="System.Text.Primitives" Version="$(CoreFxLabVersion)" />
+    <PackageReference Include="System.Binary.Base64" Version="$(CoreFxLabVersion)" />
+    <PackageReference Include="System.IO.Pipelines" Version="$(CoreFxLabVersion)" />
+    <PackageReference Include="System.IO.Pipelines.Networking.Libuv" Version="$(CoreFxLabVersion)" />
+    <PackageReference Include="System.IO.Pipelines.Networking.Sockets" Version="$(CoreFxLabVersion)" />
+    <PackageReference Include="System.IO.Pipelines.Text.Primitives" Version="$(CoreFxLabVersion)" />
+  </ItemGroup>
+
+</Project>

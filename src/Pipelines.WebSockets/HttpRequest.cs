@@ -1,7 +1,8 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.IO.Pipelines;
 
-namespace Channels.WebSockets
+namespace Pipelines.WebSockets
 {
     internal struct HttpRequest : IDisposable
     {
@@ -11,16 +12,16 @@ namespace Channels.WebSockets
             Path.Dispose();
             HttpVersion.Dispose();
             Headers.Dispose();
-            Method = Path = HttpVersion = default(ReadableBuffer);
+            Method = Path = HttpVersion = default(PreservedBuffer);
             Headers = default(HttpRequestHeaders);
         }
-        public ReadableBuffer Method { get; private set; }
-        public ReadableBuffer Path { get; private set; }
-        public ReadableBuffer HttpVersion { get; private set; }
+        public PreservedBuffer Method { get; private set; }
+        public PreservedBuffer Path { get; private set; }
+        public PreservedBuffer HttpVersion { get; private set; }
 
         public HttpRequestHeaders Headers; // yes, naked field - internal type, so not too exposed; allows for "ref" without copy
 
-        public HttpRequest(ReadableBuffer method, ReadableBuffer path, ReadableBuffer httpVersion, Dictionary<string, ReadableBuffer> headers)
+        public HttpRequest(PreservedBuffer method, PreservedBuffer path, PreservedBuffer httpVersion, Dictionary<string, PreservedBuffer> headers)
         {
             Method = method;
             Path = path;
@@ -42,8 +43,8 @@ namespace Channels.WebSockets
         }
         public HttpRequestHeaders Headers => request.Headers;
         // looks similar, but different order
-        public ReadableBuffer HttpVersion => request.Method;
-        public ReadableBuffer StatusCode => request.Path;
-        public ReadableBuffer StatusText => request.HttpVersion;
+        public PreservedBuffer HttpVersion => request.Method;
+        public PreservedBuffer StatusCode => request.Path;
+        public PreservedBuffer StatusText => request.HttpVersion;
     }
 }

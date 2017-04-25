@@ -1,10 +1,9 @@
 ﻿using System.Threading.Tasks;
 
-namespace Channels.WebSockets
+namespace Pipelines.WebSockets
 {
-    internal static class TaskResult
-    {
-        public static readonly Task<bool> True = Task.FromResult(true), False = Task.FromResult(false);
-        public static readonly Task<int> Zero = Task.FromResult(0);
-    }
+    //internal static class TaskResult
+    //{
+    //    public static readonly Task<int> Zero = Task.FromResult(0);
+    //}
 }

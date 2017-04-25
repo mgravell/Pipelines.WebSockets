@@ -3,7 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
 
-namespace Channels.WebSockets
+namespace Pipelines.WebSockets
 {
     public enum ConnectionType
     {

@@ -1,24 +1,30 @@
-﻿
-namespace Channels.WebSockets
+﻿using System;
+using System.IO.Pipelines;
+using System.Threading.Tasks;
+
+namespace Pipelines.WebSockets
 {
-    public class WebSocketChannel : IChannel
+    public class WebSocketChannel : IPipeConnection
     {
-        private Channel _input, _output;
+        private IPipe _input, _output;
         private WebSocketConnection _webSocket;
 
-        public WebSocketChannel(WebSocketConnection webSocket, ChannelFactory channelFactory)
+        public WebSocketChannel(WebSocketConnection webSocket, PipeFactory pipeFactory)
         {
+
             _webSocket = webSocket;
-            _input = channelFactory.CreateChannel();
-            _output = channelFactory.CreateChannel();
+            _input = pipeFactory.Create();
+            _output = pipeFactory.Create();
 
             webSocket.BufferFragments = false;
-            webSocket.BinaryAsync += msg => msg.WriteAsync(_input);
-            webSocket.Closed += () => _input.CompleteWriter();
-
+            webSocket.BinaryAsync += msg => msg.WriteAsync(_input.Writer).AsTask();
+            webSocket.Closed += () => _input.Writer.Complete();
             SendCloseWhenOutputCompleted();
             PushFromOutputToWebSocket();
         }
+
+
+
         private async void SendCloseWhenOutputCompleted()
         {
             await _output.Reading;
@@ -29,11 +35,12 @@ namespace Channels.WebSockets
         {
             while (true)
             {
-                var data = await _output.ReadAsync();
+                var read = await _output.Reader.ReadAsync();
+                if (read.IsCompleted) break;
+                var data = read.Buffer;
                 if(data.IsEmpty)
                 {
-                    if (_output.Reading.IsCompleted) break;
-                    _output.Advance(data.End);
+                    _output.Reader.Advance(data.End);
                 }
                 else
                 {
@@ -41,14 +48,14 @@ namespace Channels.WebSockets
                     var message = new Message(data, mask: 0, isFinal: true);
                     var send = _webSocket.SendAsync(WebSocketsFrame.OpCodes.Binary, ref message);
                     // can free up one lock on the data *before* we await...
-                    _output.Advance(data.End);
+                    _output.Reader.Advance(data.End);
                     await send;
                 }
             }
         }
 
-        public IReadableChannel Input => _input;
-        public IWritableChannel Output => _output;
+        public IPipeReader Input => _input.Reader;
+        public IPipeWriter Output => _output.Writer;
 
         public void Dispose() => _webSocket.Dispose();
     }

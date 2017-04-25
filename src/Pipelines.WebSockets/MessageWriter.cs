@@ -1,4 +1,4 @@
-﻿namespace Channels.WebSockets
+﻿namespace Pipelines.WebSockets
 {
     internal static class MessageWriter
     {

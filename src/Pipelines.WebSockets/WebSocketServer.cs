@@ -1,7 +1,7 @@
-﻿using Channels;
-using Channels.Networking.Libuv;
-using Channels.Networking.Sockets;
-using Channels.Text.Primitives;
+﻿using System.IO.Pipelines;
+using System.IO.Pipelines.Networking.Libuv;
+using System.IO.Pipelines.Networking.Sockets;
+using System.IO.Pipelines.Text.Primitives;
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
@@ -11,7 +11,7 @@ using System.Linq;
 using System.Net;
 using System.Threading.Tasks;
 
-namespace Channels.WebSockets
+namespace Pipelines.WebSockets
 {
     public abstract class WebSocketServer : IDisposable
     {
@@ -46,29 +46,30 @@ namespace Channels.WebSockets
         }
         public int ConnectionCount => connections.Count;
 
-        public Task<int> CloseAllAsync(string message = null, Func<WebSocketConnection, bool> predicate = null)
+        public ValueTask<int> CloseAllAsync(string message = null, Func<WebSocketConnection, bool> predicate = null)
         {
-            if (connections.IsEmpty) return TaskResult.Zero; // avoid any processing
+            if (connections.IsEmpty) return new ValueTask<int>(0); // avoid any processing
             return BroadcastAsync(WebSocketsFrame.OpCodes.Close, MessageWriter.Create(message, true), predicate);
         }
-        public Task<int> BroadcastAsync(string message, Func<WebSocketConnection, bool> predicate = null)
+        public ValueTask<int> BroadcastAsync(string message, Func<WebSocketConnection, bool> predicate = null)
         {
             if (message == null) throw new ArgumentNullException(nameof(message));
-            if (connections.IsEmpty) return TaskResult.Zero; // avoid any processing
+            if (connections.IsEmpty) return new ValueTask<int>(0); // avoid any processing
             return BroadcastAsync(WebSocketsFrame.OpCodes.Text, MessageWriter.Create(message, true), predicate);
         }
-        public Task<int> PingAsync(string message = null, Func<WebSocketConnection, bool> predicate = null)
+        public ValueTask<int> PingAsync(string message = null, Func<WebSocketConnection, bool> predicate = null)
         {
-            if (connections.IsEmpty) return TaskResult.Zero; // avoid any processing
+            if (connections.IsEmpty) return new ValueTask<int>(0); // avoid any processing
             return BroadcastAsync(WebSocketsFrame.OpCodes.Ping, MessageWriter.Create(message, true), predicate);
         }
-        public Task<int> BroadcastAsync(byte[] message, Func<WebSocketConnection, bool> predicate = null)
+        public ValueTask<int> BroadcastAsync(byte[] message, Func<WebSocketConnection, bool> predicate = null)
         {
             if (message == null) throw new ArgumentNullException(nameof(message));
-            if (connections.IsEmpty) return TaskResult.Zero; // avoid any processing
+            if (connections.IsEmpty) return new ValueTask<int>(0); // avoid any processing
             return BroadcastAsync(WebSocketsFrame.OpCodes.Binary, MessageWriter.Create(message), predicate);
         }
-        private async Task<int> BroadcastAsync<T>(WebSocketsFrame.OpCodes opCode, T message, Func<WebSocketConnection, bool> predicate) where T : struct, IMessageWriter
+        private async ValueTask<int> BroadcastAsync<T>(WebSocketsFrame.OpCodes opCode, T message, Func<WebSocketConnection, bool> predicate)
+            where T : struct, IMessageWriter
         {
             int count = 0;
             foreach (var pair in connections)
@@ -78,7 +79,11 @@ namespace Channels.WebSockets
                 {
                     try
                     {
-                        await conn.SendAsync<T>(opCode, ref message);
+                        var task = conn.SendAsync<T>(opCode, ref message);
+                        if (task.Status != TaskStatus.RanToCompletion)
+                        {
+                            await task;
+                        }
                         count++;
                     }
                     catch { } // not really all that bothered - they just won't get counted
@@ -89,27 +94,28 @@ namespace Channels.WebSockets
         // todo: pick a more appropriate container for connection management; this insane choice is just arbitrary
         private ConcurrentDictionary<WebSocketConnection, WebSocketConnection> connections = new ConcurrentDictionary<WebSocketConnection, WebSocketConnection>();
 
-        public void StartLibuv(IPAddress ip, int port)
+        public Task StartLibuvAsync(IPAddress ip, int port)
         {
             if (uvListener == null && socketListener == null)
             {
                 uvThread = new UvThread();
                 uvListener = new UvTcpListener(uvThread, new IPEndPoint(ip, port));
                 uvListener.OnConnection(OnConnection);
-                uvListener.Start();
+                return uvListener.StartAsync();
             }
+            return Task.CompletedTask;
         }
-        public void StartManagedSockets(IPAddress ip, int port, ChannelFactory channelFactory = null)
+        public void StartManagedSockets(IPAddress ip, int port, PipeFactory pipeFactory = null)
         {
             if (uvListener == null && socketListener == null)
             {
-                socketListener = new SocketListener(channelFactory);
+                socketListener = new SocketListener(pipeFactory);
                 socketListener.OnConnection(OnConnection);
                 socketListener.Start(new IPEndPoint(ip, port));
             }
         }
 
-        private async void OnConnection(IChannel connection)
+        private async Task OnConnection(IPipeConnection connection)
         {
             using (connection)
             {
@@ -168,22 +174,15 @@ namespace Channels.WebSockets
 #endif
         }
 
-
-        
-
-
-        
-
-        
-        protected internal virtual Task OnBinaryAsync(WebSocketConnection connection, ref Message message) => TaskResult.True;
-        protected internal virtual Task OnTextAsync(WebSocketConnection connection, ref Message message) => TaskResult.True;
+        protected internal virtual Task OnBinaryAsync(WebSocketConnection connection, ref Message message) => Task.CompletedTask;
+        protected internal virtual Task OnTextAsync(WebSocketConnection connection, ref Message message) => Task.CompletedTask;
 
         static readonly char[] Comma = { ',' };
 
-        protected virtual Task<bool> OnAuthenticateAsync(WebSocketConnection connection, ref HttpRequestHeaders headers) => TaskResult.True;
-        protected virtual Task OnHandshakeCompleteAsync(WebSocketConnection connection) => TaskResult.True;
+        protected virtual ValueTask<bool> OnAuthenticateAsync(WebSocketConnection connection, ref HttpRequestHeaders headers) => new ValueTask<bool>(true);
+        protected virtual Task OnHandshakeCompleteAsync(WebSocketConnection connection) => Task.CompletedTask;
 
-        private WebSocketConnection GetProtocol(IChannel connection, ref HttpRequest request)
+        private WebSocketConnection GetProtocol(IPipeConnection connection, ref HttpRequest request)
         {
             var headers = request.Headers;
             string host = headers.GetAsciiString("Host");
@@ -204,7 +203,7 @@ namespace Channels.WebSockets
                 var parts = headers.GetAsciiString("Connection").Split(Comma);
                 foreach (var part in parts) connectionParts.Add(part.Trim());
             }
-            if (connectionParts.Contains("Upgrade") && IsCaseInsensitiveAsciiMatch(headers.GetRaw("Upgrade"), "websocket"))
+            if (connectionParts.Contains("Upgrade") && IsCaseInsensitiveAsciiMatch(headers.GetRaw("Upgrade").Buffer, "websocket"))
             {
                 //5.   The request MUST contain an |Upgrade| header field whose value
                 //MUST include the "websocket" keyword.
@@ -233,7 +232,7 @@ namespace Channels.WebSockets
                 }
                 else
                 {
-                    var version = headers.GetRaw("Sec-WebSocket-Version").GetUInt32();
+                    var version = headers.GetRaw("Sec-WebSocket-Version").Buffer.GetUInt32();
                     switch (version)
                     {
 
@@ -267,7 +266,7 @@ namespace Channels.WebSockets
             // To make it even worse, hybi-00 used Origin, so it is all over the place!
             socket.Origin = headers.GetAsciiString("Origin") ?? headers.GetAsciiString("Sec-WebSocket-Origin");
             socket.Protocol = headers.GetAsciiString("Sec-WebSocket-Protocol");
-            socket.RequestLine = request.Path.GetAsciiString();
+            socket.RequestLine = request.Path.Buffer.GetAsciiString();
             return socket;
         }
         
@@ -280,28 +279,30 @@ namespace Channels.WebSockets
             StartLine,
             Headers
         }
-        internal static async Task<HttpResponse> ParseHttpResponse(IReadableChannel _input)
+        internal static async Task<HttpResponse> ParseHttpResponse(IPipeReader input)
         {
-            return new HttpResponse(await ParseHttpRequest(_input));
+            return new HttpResponse(await ParseHttpRequest(input));
         }
-        internal static async Task<HttpRequest> ParseHttpRequest(IReadableChannel _input)
+        static int Peek(ref ReadableBuffer buffer) => buffer.Length == 0 ? -1 : buffer.First.Span[0];
+        internal static async Task<HttpRequest> ParseHttpRequest(IPipeReader input)
         {
-            ReadableBuffer Method = default(ReadableBuffer), Path = default(ReadableBuffer), HttpVersion = default(ReadableBuffer);
-            Dictionary<string, ReadableBuffer> Headers = new Dictionary<string, ReadableBuffer>();
+            PreservedBuffer Method = default(PreservedBuffer), Path = default(PreservedBuffer), HttpVersion = default(PreservedBuffer);
+            Dictionary<string, PreservedBuffer> Headers = new Dictionary<string, PreservedBuffer>();
             try
             {
                 ParsingState _state = ParsingState.StartLine;
                 bool needMoreData = true;
                 while (needMoreData)
                 {
-                    var buffer = await _input.ReadAsync();
+                    var read = await input.ReadAsync();
+                    var buffer = read.Buffer;
 
                     var consumed = buffer.Start;
                     needMoreData = true;
 
                     try
                     {
-                        if (buffer.IsEmpty && _input.Reading.IsCompleted)
+                        if (buffer.IsEmpty && read.IsCompleted)
                         {
                             throw new EndOfStreamException();
                         }
@@ -359,7 +360,7 @@ namespace Channels.WebSockets
 
                         while (!buffer.IsEmpty)
                         {
-                            var ch = buffer.Peek();
+                            var ch = Peek(ref buffer);
 
                             if (ch == -1)
                             {
@@ -370,7 +371,7 @@ namespace Channels.WebSockets
                             {
                                 // Check for final CRLF.
                                 buffer = buffer.Slice(1);
-                                ch = buffer.Peek();
+                                ch = Peek(ref buffer);
                                 buffer = buffer.Slice(1);
 
                                 if (ch == -1)
@@ -427,11 +428,11 @@ namespace Channels.WebSockets
                     }
                     finally
                     {
-                        _input.Advance(consumed);
+                        input.Advance(consumed);
                     }
                 }
                 var result = new HttpRequest(Method, Path, HttpVersion, Headers);
-                Method = Path = HttpVersion = default(ReadableBuffer);
+                Method = Path = HttpVersion = default(PreservedBuffer);
                 Headers = null;
                 return result;
             }
@@ -501,7 +502,6 @@ namespace Channels.WebSockets
 
         public void Stop()
         {
-            uvListener?.Stop();
             uvThread?.Dispose();
             uvListener = null;
             uvThread = null;

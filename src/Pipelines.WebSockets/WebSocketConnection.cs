@@ -1,11 +1,12 @@
-﻿using Channels.Networking.Sockets;
+﻿using System.IO.Pipelines.Networking.Sockets;
 using System;
 using System.Collections.Generic;
 using System.Net;
 using System.Threading;
 using System.Threading.Tasks;
+using System.IO.Pipelines;
 
-namespace Channels.WebSockets
+namespace Pipelines.WebSockets
 {
     public class WebSocketConnection : IDisposable
     {
@@ -16,7 +17,7 @@ namespace Channels.WebSockets
         public static async Task<WebSocketConnection> ConnectAsync(
             string location, string protocol = null, string origin = null,
             Action<HttpRequestHeaders> addHeaders = null,
-            ChannelFactory channelFactory = null)
+            PipeFactory pipeFactory = null)
         {
             WebSocketServer.WriteStatus(ConnectionType.Client, $"Connecting to {location}...");
             Uri uri;
@@ -31,16 +32,16 @@ namespace Channels.WebSockets
                 throw new NotImplementedException("host must be an IP address at the moment, sorry");
             }
             WebSocketServer.WriteStatus(ConnectionType.Client, $"Opening socket to {ip}:{uri.Port}...");
-            var socket = await SocketConnection.ConnectAsync(new IPEndPoint(ip, uri.Port), channelFactory);
+            var socket = await SocketConnection.ConnectAsync(new IPEndPoint(ip, uri.Port), pipeFactory);
 
             return await WebSocketProtocol.ClientHandshake(socket, uri, origin, protocol);
         }
 
 
-        private IChannel connection;
-        internal IChannel Connection => connection;
+        private IPipeConnection connection;
+        internal IPipeConnection Connection => connection;
 
-        internal WebSocketConnection(IChannel connection, ConnectionType connectionType)
+        internal WebSocketConnection(IPipeConnection connection, ConnectionType connectionType)
         {
             this.connection = connection;
             this.connectionType = connectionType;
@@ -56,14 +57,16 @@ namespace Channels.WebSockets
         {
             while (true)
             {
-                var buffer = await connection.Input.ReadAsync();
+                var read = await connection.Input.ReadAsync();
+
+                if(read.IsCompleted)
+                {
+                    break; // that's all, folks
+                }
+                WebSocketsFrame frame;
+                var buffer = read.Buffer;
                 try
                 {
-                    if (buffer.IsEmpty && connection.Input.Reading.IsCompleted)
-                    {
-                        break; // that's all, folks
-                    }
-                    WebSocketsFrame frame;
                     if (WebSocketProtocol.TryReadFrameHeader(ref buffer, out frame))
                     {
                         int payloadLength = frame.PayloadLength;
@@ -84,7 +87,6 @@ namespace Channels.WebSockets
                             }
                         }
 
-
                         if (frame.IsControlFrame && !frame.IsFinal)
                         {
                             throw new InvalidOperationException("Control frames cannot be fragmented");
@@ -93,7 +95,6 @@ namespace Channels.WebSockets
                         // and finally, progress past the frame
                         if (payloadLength != 0) buffer = buffer.Slice(payloadLength);
                     }
-
                 }
                 finally
                 {
@@ -145,10 +146,10 @@ namespace Channels.WebSockets
                 {
                     // need to buffer this data against the connection
                     this.AddBacklog(ref buffer, ref frame);
-                    return TaskResult.True;
+                    return Task.CompletedTask;
                 }
             }
-            msg = new Message(buffer.Slice(0, frame.PayloadLength), frame.Mask, frame.IsFinal);
+            msg = new Message(buffer.Slice(0, frame.PayloadLength), frame.MaskLittleEndian, frame.IsFinal);
             if (server != null)
             {
                 return OnServerAndConnectionFrameReceivedImplAsync(opCode, msg, server);
@@ -174,7 +175,7 @@ namespace Channels.WebSockets
                 case WebSocketsFrame.OpCodes.Text:
                     return server.OnTextAsync(this, ref message);
             }
-            return TaskResult.True;
+            return Task.CompletedTask;
         }
         private Task OnConectionFrameReceivedImplAsync(WebSocketsFrame.OpCodes opCode, ref Message message)
         {
@@ -190,16 +191,16 @@ namespace Channels.WebSockets
                     // respond to a close in-kind (2-handed close)
                     try { Closed?.Invoke(); } catch { }
 
-                    if (connection.Output.Writing.IsCompleted) return TaskResult.True; // already closed
+                    if (connection.Output.Writing.IsCompleted) return Task.CompletedTask; // already closed
 
                     return SendAsync(WebSocketsFrame.OpCodes.Close, ref message);
                 case WebSocketsFrame.OpCodes.Ping:
                     // by default, respond to a ping with a matching pong
                     return SendAsync(WebSocketsFrame.OpCodes.Pong, ref message); // right back at you
                 case WebSocketsFrame.OpCodes.Pong:
-                    return TaskResult.True;
+                    return Task.CompletedTask;
                 default:
-                    return TaskResult.True;
+                    return Task.CompletedTask;
             }
         }
         WebSocketsFrame.OpCodes lastOpCode;
@@ -222,7 +223,7 @@ namespace Channels.WebSockets
         }
 
 
-        volatile List<ReadableBuffer> backlog;
+        volatile List<PreservedBuffer> backlog;
         // TODO: not sure how to do this; basically I want to lease a writable, expandable area
         // for a duration, and be able to access it for reading, and release
         internal void AddBacklog(ref ReadableBuffer buffer, ref WebSocketsFrame frame)
@@ -232,12 +233,12 @@ namespace Channels.WebSockets
 
             var slicedBuffer = buffer.Slice(0, length);
             // unscramble the data
-            if (frame.Mask != 0) WebSocketsFrame.ApplyMask(ref slicedBuffer, frame.Mask);
+            if (frame.MaskLittleEndian != 0) WebSocketsFrame.ApplyMask(ref slicedBuffer, frame.MaskLittleEndian);
 
             var backlog = this.backlog;
             if (backlog == null)
             {
-                var newBacklog = new List<ReadableBuffer>();
+                var newBacklog = new List<PreservedBuffer>();
                 backlog = Interlocked.CompareExchange(ref this.backlog, newBacklog, null) ?? newBacklog;
             }
             backlog.Add(slicedBuffer.Preserve());
@@ -268,7 +269,7 @@ namespace Channels.WebSockets
 
         public bool HasBacklog => (backlog?.Count ?? 0) != 0;
 
-        internal List<ReadableBuffer> GetBacklog() => backlog;
+        internal List<PreservedBuffer> GetBacklog() => backlog;
 
         public Task SendAsync(string message, WebSocketsFrame.FrameFlags flags = WebSocketsFrame.FrameFlags.IsFinal)
         {
@@ -289,7 +290,7 @@ namespace Channels.WebSockets
         }
         public Task CloseAsync(string message = null)
         {
-            if (connection.Output.Writing.IsCompleted) return TaskResult.True;
+            if (connection.Output.Writing.IsCompleted) return Task.CompletedTask;
 
             var msg = MessageWriter.Create(message);
             var task = SendAsync(WebSocketsFrame.OpCodes.Close, ref msg);
@@ -297,7 +298,7 @@ namespace Channels.WebSockets
         }
         internal Task SendAsync(WebSocketsFrame.OpCodes opCode, ref Message message, WebSocketsFrame.FrameFlags flags = WebSocketsFrame.FrameFlags.IsFinal)
         {
-            if(connection.Output.Writing.IsCompleted)
+            if(connection.Output.IsCompleted)
             {
                 throw new InvalidOperationException("Connection has been closed");
             }
@@ -365,11 +366,19 @@ namespace Channels.WebSockets
         }
 
         public event Func<Message, Task> BinaryAsync, TextAsync;
-        internal Task OnBinaryAsync(ref Message message)
-            => BinaryAsync?.Invoke(message) ?? TaskResult.True;
 
-        internal Task OnTextAsync(ref Message message)
-            => TextAsync?.Invoke(message) ?? TaskResult.True;
+
+        internal Task OnBinaryAsync(ref Message message) => OnMessage(BinaryAsync, ref message);
+
+        internal Task OnTextAsync(ref Message message) => OnMessage(TextAsync, ref message);
+
+        static async Task Awaited(Task task) => await task;
+        static Task OnMessage(Func<Message, Task> handler, ref Message message)
+        {
+            if (handler == null) return Task.CompletedTask;
+            var task = handler(message);
+            return task.IsCompleted ? task : Awaited(task);
+        }
 
         // lazily instantiated SemaphoreSlim
         object writeLock;

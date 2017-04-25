@@ -1,13 +1,14 @@
-﻿using Channels.Text.Primitives;
-using System;
+﻿using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.IO.Pipelines;
+using System.IO.Pipelines.Text.Primitives;
 
-namespace Channels.WebSockets
+namespace Pipelines.WebSockets
 {
-    public struct HttpRequestHeaders : IEnumerable<KeyValuePair<string, ReadableBuffer>>, IDisposable
+    public struct HttpRequestHeaders : IEnumerable<KeyValuePair<string, PreservedBuffer>>, IDisposable
     {
-        private Dictionary<string, ReadableBuffer> headers;
+        private Dictionary<string, PreservedBuffer> headers;
         public void Dispose()
         {
             if (headers != null)
@@ -17,26 +18,26 @@ namespace Channels.WebSockets
             }
             headers = null;
         }
-        internal HttpRequestHeaders(Dictionary<string, ReadableBuffer> headers)
+        internal HttpRequestHeaders(Dictionary<string, PreservedBuffer> headers)
         {
             this.headers = headers;
         }
         public bool ContainsKey(string key) => headers.ContainsKey(key);
-        IEnumerator<KeyValuePair<string, ReadableBuffer>> IEnumerable<KeyValuePair<string, ReadableBuffer>>.GetEnumerator() => ((IEnumerable<KeyValuePair<string, ReadableBuffer>>)headers).GetEnumerator();
+        IEnumerator<KeyValuePair<string, PreservedBuffer>> IEnumerable<KeyValuePair<string, PreservedBuffer>>.GetEnumerator() => ((IEnumerable<KeyValuePair<string, PreservedBuffer>>)headers).GetEnumerator();
         IEnumerator IEnumerable.GetEnumerator() => ((IEnumerable)headers).GetEnumerator();
-        public Dictionary<string, ReadableBuffer>.Enumerator GetEnumerator() => headers.GetEnumerator();
+        public Dictionary<string, PreservedBuffer>.Enumerator GetEnumerator() => headers.GetEnumerator();
 
         public string GetAsciiString(string key)
         {
-            ReadableBuffer buffer;
-            if (headers.TryGetValue(key, out buffer)) return buffer.GetAsciiString();
+            PreservedBuffer buffer;
+            if (headers.TryGetValue(key, out buffer)) return buffer.Buffer.GetAsciiString();
             return null;
         }
-        internal ReadableBuffer GetRaw(string key)
+        internal PreservedBuffer GetRaw(string key)
         {
-            ReadableBuffer buffer;
+            PreservedBuffer buffer;
             if (headers.TryGetValue(key, out buffer)) return buffer;
-            return default(ReadableBuffer);
+            return default(PreservedBuffer);
         }
 
     }

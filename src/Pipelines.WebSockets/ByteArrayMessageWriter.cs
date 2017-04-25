@@ -1,6 +1,7 @@
 ﻿using System;
+using System.IO.Pipelines;
 
-namespace Channels.WebSockets
+namespace Pipelines.WebSockets
 {
     internal struct ByteArrayMessageWriter : IMessageWriter
     {

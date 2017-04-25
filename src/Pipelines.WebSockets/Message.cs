@@ -1,16 +1,16 @@
-﻿using Channels.Text.Primitives;
-using System;
+﻿using System;
 using System.Collections.Generic;
+using System.IO.Pipelines;
 using System.Text;
 using System.Threading;
-using System.Threading.Tasks;
+using System.IO.Pipelines.Text.Primitives;
 
-namespace Channels.WebSockets
+namespace Pipelines.WebSockets
 {
     public struct Message : IMessageWriter
     {
         private ReadableBuffer _buffer;
-        private List<ReadableBuffer> _buffers;
+        private List<PreservedBuffer> _buffers;
         private int _mask;
         private string _text;
         public bool IsFinal { get; }
@@ -23,41 +23,40 @@ namespace Channels.WebSockets
             _buffers = null;
         }
 
-        internal Task WriteAsync(Channel output)
+        internal WritableBufferAwaitable WriteAsync(IPipeWriter output)
         {
             var write = output.Alloc();
             if(_buffers != null)
             {
                 foreach (var buffer in _buffers)
                 {
-                    var tmp = buffer;
-                    write.Append(ref tmp);
+                    write.Append(buffer.Buffer);
                 }
             }
             else
             {
                 ApplyMask();
-                write.Append(ref _buffer);
+                write.Append(_buffer);
             }
             return write.FlushAsync();
 
         }
 
-        internal Message(List<ReadableBuffer> buffers)
+        internal Message(List<PreservedBuffer> buffers)
         {
             _mask = 0;
             _text = null;
             IsFinal = true;
-            if (buffers.Count == 1) // can simplify
-            {
-                _buffer = buffers[0];
-                this._buffers = null;
-            }
-            else
-            {
+            //if (buffers.Count == 1) // can simplify
+            //{
+            //    _buffer = buffers[0];
+            //    this._buffers = null;
+            //}
+            //else
+            //{
                 _buffer = default(ReadableBuffer);
                 this._buffers = buffers;
-            }
+            //}
         }
         private void ApplyMask()
         {
@@ -86,7 +85,7 @@ namespace Channels.WebSockets
         private static readonly Encoding Utf8Encoding = Encoding.UTF8;
         private static Decoder Utf8Decoder;
 
-        private static string GetText(List<ReadableBuffer> buffers)
+        private static string GetText(List<PreservedBuffer> buffers)
         {
             // try to re-use a shared decoder; note that in heavy usage, we might need to allocate another
             var decoder = (Decoder)Interlocked.Exchange<Decoder>(ref Utf8Decoder, null);
@@ -94,7 +93,7 @@ namespace Channels.WebSockets
             else decoder.Reset();
 
             var length = 0;
-            foreach (var buffer in buffers) length += buffer.Length;
+            foreach (var buffer in buffers) length += buffer.Buffer.Length;
 
             var capacity = length; // worst case is 1 byte per char
             var chars = new char[capacity];
@@ -105,7 +104,7 @@ namespace Channels.WebSockets
             bool completed;
             foreach (var buffer in buffers)
             {
-                foreach (var span in buffer)
+                foreach (var span in buffer.Buffer)
                 {
                     ArraySegment<byte> segment;
                     if(!span.TryGetArray(out segment))
@@ -146,7 +145,7 @@ namespace Channels.WebSockets
             var buffers = this._buffers;
             if (buffers == null) return _buffer.Length;
             int count = 0;
-            foreach (var buffer in buffers) count += buffer.Length;
+            foreach (var buffer in buffers) count += buffer.Buffer.Length;
             return count;
         }
 
@@ -156,19 +155,13 @@ namespace Channels.WebSockets
             if (buffers == null)
             {
                 ApplyMask();
-                destination.Append(ref _buffer);
+                destination.Append(_buffer);
             }
             else
             {
-                // all this because C# doesn't let you use "ref" with an iterator variable
-                using (var iter = buffers.GetEnumerator())
+                foreach(var buffer in buffers)
                 {
-                    ReadableBuffer tmp;
-                    while (iter.MoveNext())
-                    {
-                        tmp = iter.Current;
-                        destination.Append(ref tmp);
-                    }
+                    destination.Append(buffer.Buffer);
                 }
             }
 

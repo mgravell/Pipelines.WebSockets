@@ -1,7 +1,7 @@
-﻿using Channels.Text.Primitives;
-using System.Text;
+﻿using System.Text;
+using System.IO.Pipelines;
 
-namespace Channels.WebSockets
+namespace Pipelines.WebSockets
 {
     internal struct StringMessageWriter : IMessageWriter
     {

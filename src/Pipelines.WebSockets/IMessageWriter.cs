@@ -1,4 +1,6 @@
-﻿namespace Channels.WebSockets
+﻿using System.IO.Pipelines;
+
+namespace Pipelines.WebSockets
 {
     internal interface IMessageWriter
     {

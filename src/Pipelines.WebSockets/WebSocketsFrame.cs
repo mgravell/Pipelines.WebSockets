@@ -1,8 +1,9 @@
 ﻿using System;
+using System.IO.Pipelines;
 using System.Numerics;
 using System.Runtime.CompilerServices;
 
-namespace Channels.WebSockets
+namespace Pipelines.WebSockets
 {
     public struct WebSocketsFrame
     {
@@ -32,115 +33,76 @@ namespace Channels.WebSockets
             Pong = 10,
             // 11-15 reserved for control op-codes
         }
-        public WebSocketsFrame(byte header, bool isMasked, int mask, int payloadLength)
+        public WebSocketsFrame(byte header, bool isMasked, int maskLittleEndian, int payloadLength)
         {
             this.header = header;
             header2 = (byte)(isMasked ? 1 : 0);
             PayloadLength = payloadLength;
-            Mask = isMasked ? mask : 0;
+            MaskLittleEndian = isMasked ? maskLittleEndian : 0;
         }
         public bool IsMasked => (header2 & 1) != 0;
         private bool HasFlag(FrameFlags flag) => (header & (byte)flag) != 0;
 
         
-        private static readonly int vectorWidth = Vector<byte>.Count;
-        private static readonly int vectorShift = (int)Math.Log(vectorWidth, 2);
-        private static readonly int vectorOverflow = ~(~0 << vectorShift);
-        private static readonly bool isHardwareAccelerated = Vector.IsHardwareAccelerated;
+        //private static readonly int vectorWidth = Vector<byte>.Count;
+        //private static readonly int vectorShift = (int)Math.Log(vectorWidth, 2);
+        //private static readonly int vectorOverflow = ~(~0 << vectorShift);
+        //private static readonly bool isHardwareAccelerated = Vector.IsHardwareAccelerated;
 
-        private static unsafe uint ApplyMask(byte* ptr, int count, uint mask)
+        private static unsafe uint ApplyMask(Span<byte> span, uint mask)
         {
-            int chunks;
-
             // Vector widths
-            if (isHardwareAccelerated)
+            if (Vector.IsHardwareAccelerated)
             {
-                chunks = count >> vectorShift;
-                if (chunks != 0)
+                var vectors = span.NonPortableCast<byte, Vector<uint>>();
+                var vectorMask = new Vector<uint>(mask);
+                for(int i = 0; i < vectors.Length; i++)
                 {
-                    var maskVector = Vector.AsVectorByte(new Vector<uint>(mask));
-                    do
-                    {
-                        var maskedVector = Unsafe.Read<Vector<byte>>(ptr) ^ maskVector;
-                        Unsafe.Write(ptr, maskedVector);
-                        ptr += vectorWidth;
-                    } while (--chunks != 0);
-                    count &= vectorOverflow;
+                    vectors[i] ^= vectorMask;
                 }
+                span = span.Slice(vectors.Length * Vector<uint>.Count);
             }
 
             // qword widths
-            chunks = count >> 3;
-            if (chunks != 0)
+            if((span.Length & ~7) != 0)
             {
                 ulong mask8 = mask;
                 mask8 = (mask8 << 32) | mask8;
-                do
+                var ulongs = span.NonPortableCast<byte, ulong>();
+                for (int i = 0; i < ulongs.Length; i++)
                 {
-                    *((ulong*)ptr) ^= mask8;
-                    ptr += sizeof(ulong);
-                } while (--chunks != 0);
+                    ulongs[i] ^= mask8;
+                }
+                span = span.Slice(ulongs.Length << 3);
             }
 
-            // Now there can be at most 7 bytes left
-            switch (count & 7)
+            // Now there can be at most 7 bytes left; loop
+            for(int i = 0; i < span.Length; i++)
             {
-                case 0:
-                    // No-op: We already finished masking all the bytes.
-                    break;
-                case 1:
-                    *(ptr) = (byte)(*(ptr) ^ (byte)(mask));
-                    mask = (mask >> 8) | (mask << 24);
-                    break;
-                case 2:
-                    *(ushort*)(ptr) = (ushort)(*(ushort*)(ptr) ^ (ushort)(mask));
-                    mask = (mask >> 16) | (mask << 16);
-                    break;
-                case 3:
-                    *(ushort*)(ptr) = (ushort)(*(ushort*)(ptr) ^ (ushort)(mask));
-                    *(ptr + 2) = (byte)(*(ptr + 2) ^ (byte)(mask >> 16));
-                    mask = (mask >> 24) | (mask << 8);
-                    break;
-                case 4:
-                    *(uint*)(ptr) = *(uint*)(ptr) ^ mask;
-                    break;
-                case 5:
-                    *(uint*)(ptr) = *(uint*)(ptr) ^ mask;
-                    *(ptr + 4) = (byte)(*(ptr + 4) ^ (byte)(mask));
-                    mask = (mask >> 8) | (mask << 24);
-                    break;
-                case 6:
-                    *(uint*)(ptr) = *(uint*)(ptr) ^ mask;
-                    *(ushort*)(ptr + 4) = (ushort)(*(ushort*)(ptr + 4) ^ (ushort)(mask));
-                    mask = (mask >> 16) | (mask << 16);
-                    break;
-                case 7:
-                    *(uint*)(ptr) = *(uint*)(ptr) ^ mask;
-                    *(ushort*)(ptr + 4) = (ushort)(*(ushort*)(ptr + 4) ^ (ushort)(mask));
-                    *(ptr + 6) = (byte)(*(ptr + 6) ^ (byte)(mask >> 16));
-                    mask = (mask >> 24) | (mask << 8);
-                    break;
+                var b = mask & 0xFF;
+                mask = (mask >> 8) | (b << 24);
+                span[i] ^= (byte)b;                
             }
             return mask;
         }
 
-        internal unsafe static void ApplyMask(ref ReadableBuffer buffer, int mask)
+        internal unsafe static void ApplyMask(ref ReadableBuffer buffer, int maskLittleEndian)
         {
-            if (mask == 0) return;
+            if (maskLittleEndian == 0) return;
 
-            uint m = (uint)mask;
+            uint m = (uint)maskLittleEndian;
             foreach(var span in buffer)
             {
                 // note: this is an optimized xor implementation using Vector<byte>, qword hacks, etc; unsafe access
                 // to the span  is warranted
                 // note: in this case, we know we're talking about memory from the pool, so we know it is already pinned
-                m = ApplyMask((byte*)span.UnsafePointer, span.Length, m);
+                m = ApplyMask(span.Span, m);
             }
         }
 
 
         public bool IsControlFrame { get { return (header & (byte)OpCodes.Close) != 0; } }
-        public int Mask { get; }
+        public int MaskLittleEndian { get; }
         public OpCodes OpCode => (OpCodes)(header & 15);
         public FrameFlags Flags => (FrameFlags)(header & ~15);
         public bool IsFinal { get { return HasFlag(FrameFlags.IsFinal); } }

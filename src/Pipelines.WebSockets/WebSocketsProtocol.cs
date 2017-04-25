@@ -1,13 +1,16 @@
-﻿using Channels.Text.Primitives;
-using System;
+﻿using System;
 using System.Binary;
 using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading.Tasks;
-using Channels.Networking.Sockets;
+using System.IO.Pipelines.Networking.Sockets;
+using System.IO.Pipelines;
+using System.IO.Pipelines.Text.Primitives;
+using System.Buffers;
+using System.Numerics;
 
-namespace Channels.WebSockets
+namespace Pipelines.WebSockets
 {
     internal static class WebSocketProtocol
     {
@@ -30,7 +33,7 @@ namespace Channels.WebSockets
             buffer.Write(StandardPrefixBytes);
             // RFC6455 logic to prove that we know how to web-socket
             buffer.Ensure(SecResponseLength);
-            int bytes = ComputeReply(key, buffer.Memory);
+            int bytes = ComputeReply(key.Buffer, buffer.Buffer.Span);
             if (bytes != SecResponseLength)
             {
                 throw new InvalidOperationException($"Incorrect response token length; expected {SecResponseLength}, got {bytes}");
@@ -38,7 +41,7 @@ namespace Channels.WebSockets
             buffer.Advance(SecResponseLength);
             buffer.Write(StandardPostfixBytes);
 
-            return buffer.FlushAsync();
+            return buffer.FlushAsync().AsTask();
         }
 
         private static readonly RandomNumberGenerator rng = RandomNumberGenerator.Create();
@@ -57,11 +60,12 @@ namespace Channels.WebSockets
                 rng.GetBytes(buffer);
             }
         }
-        internal static async Task<WebSocketConnection> ClientHandshake(IChannel channel, Uri uri, string origin, string protocol)
+
+        internal static async Task<WebSocketConnection> ClientHandshake(IPipeConnection connection, Uri uri, string origin, string protocol)
         {
             WebSocketServer.WriteStatus(ConnectionType.Client, "Writing client handshake...");
             // write the outbound request portion of the handshake
-            var output = channel.Output.Alloc();
+            var output = connection.Output.Alloc();
             output.Write(GET);
             output.WriteAsciiString(uri.PathAndQuery);
             output.Write(HTTP_Host);
@@ -72,12 +76,12 @@ namespace Channels.WebSockets
 
             GetRandomBytes(challengeKey); // we only want the first 16 for entropy, but... meh
             output.Ensure(WebSocketProtocol.SecRequestLength);
-            int bytesWritten = Base64.Encode(new ReadOnlySpan<byte>(challengeKey, 0, 16), output.Memory);
+            int bytesWritten = Base64.Encode(new ReadOnlySpan<byte>(challengeKey, 0, 16), output.Buffer.Span);
             // now cheekily use that data we just wrote the the output buffer
             // as a source to compute the expected bytes, and store them back
             // into challengeKey; sneaky!
             WebSocketProtocol.ComputeReply(
-                output.Memory.Slice(0, WebSocketProtocol.SecRequestLength).Span,
+                output.Buffer.Slice(0, WebSocketProtocol.SecRequestLength).Span,
                 challengeKey);
             output.Advance(bytesWritten);
             output.Write(CRLF);
@@ -99,7 +103,7 @@ namespace Channels.WebSockets
             await output.FlushAsync();
 
             WebSocketServer.WriteStatus(ConnectionType.Client, "Parsing response to client handshake...");
-            using (var resp = await WebSocketServer.ParseHttpResponse(channel.Input))
+            using (var resp = await WebSocketServer.ParseHttpResponse(connection.Input))
             {
                 if (!resp.HttpVersion.Equals(ExpectedHttpVersion)
                     || !resp.StatusCode.Equals(ExpectedStatusCode)
@@ -119,7 +123,7 @@ namespace Channels.WebSockets
                 protocol = resp.Headers.GetAsciiString("Sec-WebSocket-Protocol");
             }
 
-            var webSocket = new WebSocketConnection(channel, ConnectionType.Client)
+            var webSocket = new WebSocketConnection(connection, ConnectionType.Client)
             {
                 Host = uri.Host,
                 RequestLine = uri.OriginalString,
@@ -205,7 +209,7 @@ namespace Channels.WebSockets
             output.Ensure(MaxHeaderLength);
 
             int index = 0;
-            var span = output.Memory.Span;
+            var span = output.Buffer.Span;
             
             span[index++] = (byte)(((int)flags & 240) | ((int)opCode & 15));
             if (payloadLength > ushort.MaxValue)
@@ -258,7 +262,7 @@ namespace Channels.WebSockets
             var firstSpan = buffer.First;
             if (buffer.IsSingleSpan || firstSpan.Length >= MaxHeaderLength)
             {
-                return TryReadFrameHeader(firstSpan.Length, firstSpan, ref buffer, out frame);
+                return TryReadFrameHeader(firstSpan.Length, firstSpan.Span, ref buffer, out frame);
             }
             else
             {
@@ -348,7 +352,7 @@ namespace Channels.WebSockets
                     WebSocketsFrame.ApplyMask(ref payload, mask);
                 }
             }
-            return buffer.FlushAsync();
+            return buffer.FlushAsync().AsTask();
         }
     }
 }
